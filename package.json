@@ -1,0 +1,61 @@
+{
+  "name": "siyuan-mcp-server",
+  "version": "1.0.1",
+  "description": "Lightweight MCP server for AI-assisted daily note workflows through the SiYuan CLI.",
+  "main": "dist/index.js",
+  "bin": {
+    "siyuan-mcp-server": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:standard": "node scripts/test-standard-integration.mjs",
+    "preversion": "npm test && npm run build",
+    "prepack": "npm run clean && npm run build && npm test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/William-Herly/siyuan-mcp-server.git"
+  },
+  "bugs": {
+    "url": "https://github.com/William-Herly/siyuan-mcp-server/issues"
+  },
+  "homepage": "https://github.com/William-Herly/siyuan-mcp-server#readme",
+  "keywords": [
+    "siyuan",
+    "mcp",
+    "model-context-protocol",
+    "ai-agent",
+    "notes",
+    "knowledge-management",
+    "cli"
+  ],
+  "author": "William",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.0",
+    "tsx": "^4.23.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
+  }
+}

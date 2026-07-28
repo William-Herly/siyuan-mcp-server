@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+coverage/
+*.tgz
+
+# Local runtime data
+.siyuan-mcp/
+.agents/
+notes/
+*.log
+*.jsonl
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Package manager caches
+.npm/
+.pnpm-store/
+
+# TypeScript incremental builds
+*.tsbuildinfo
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
