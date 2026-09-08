@@ -1,3 +1,5 @@
+import MarkdownIt from "markdown-it";
+import { unzipSync, strFromU8 } from "fflate";
 import { randomUUID } from "node:crypto";
 import { mkdir, open } from "node:fs/promises";
 import path from "node:path";
@@ -84,14 +86,35 @@ export async function backupDocument(config: ServerConfig, cli: SiyuanCli, docum
     if (!result.ok) return safetyError(command, "BACKUP_FAILED", "Document backup failed. No content changes were attempted.");
     const file = await open(archive, "r");
     try {
-      const header = Buffer.alloc(4);
-      await file.read(header, 0, 4, 0);
-      if ((await file.stat()).size <= 22 || !header.equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))) throw new Error("Invalid archive");
+      const size = (await file.stat()).size;
+      if (size <= 22 || size > 128 * 1024 * 1024) throw new Error("Invalid archive size");
+      validateNativeArchive(await file.readFile(), documentId);
     } finally { await file.close(); }
     return { ok: true, command, warnings: result.warnings, data: { recoveryId, documentId, archive, format: "sy.zip", automaticRollback: false } };
   } catch {
-    return safetyError(command, "BACKUP_FAILED", "Could not create or validate the document backup. No content changes were attempted.");
+    return safetyError(command, "BACKUP_FAILED", "Could not validate a native SY document backup. Some CLI versions export Markdown with a .sy extension, which cannot restore native documents. No content changes were attempted; do not retry or bypass MCP.");
   }
+}
+
+/** Structural prerequisite, not a claim of successful restore or atomic snapshot. */
+export function validateNativeArchive(bytes: Uint8Array, documentId: string): void {
+  let total = 0;
+  const roots = new Set<string>();
+  const files = unzipSync(bytes, { filter(entry) {
+    total += entry.originalSize;
+    const parts = entry.name.split("/");
+    if (total > 128 * 1024 * 1024 || entry.name.includes("\\") || parts.some((part) => part === ".." || part === "." || part.includes(":")) || !parts[0] || parts.length < 2) throw new Error("Invalid archive layout");
+    roots.add(parts[0]);
+    return entry.name.endsWith(".sy");
+  } });
+  if (roots.size !== 1) throw new Error("Expected a single native archive directory");
+  let found = false;
+  for (const [name, bytes] of Object.entries(files)) {
+    const document = JSON.parse(strFromU8(bytes));
+    if (!document || document.Type !== "NodeDocument" || !BLOCK_ID.test(document.ID) || path.posix.basename(name) !== `${document.ID}.sy` || !Array.isArray(document.Children)) throw new Error("Invalid native document");
+    if (document.ID === documentId) found = true;
+  }
+  if (!found) throw new Error("Target native document missing");
 }
 
 /** Serializes MCP operations. Other processes/SiYuan UI remain outside this lock. */
@@ -102,20 +125,48 @@ export function serializeOperation<T>(action: () => Promise<T>): Promise<T> {
   return result;
 }
 
+const markdownParser = new MarkdownIt({ html: true, linkify: false, typographer: false });
+type MarkdownToken = ReturnType<typeof markdownParser.parse>[number];
+
+/** Compare parsed content, not serializer spacing; never modify the stored Markdown. */
 export function normalizeMarkdown(value: string): string {
-  let fence: string | undefined;
-  return value.replace(/\r\n/g, "\n").split("\n").map((line): string | undefined => {
-    const marker = line.match(/^\s{0,3}(`{3,}|~{3,})/);
-    if (marker) {
-      if (!fence) fence = marker[1];
-      else if (marker[1][0] === fence[0] && marker[1].length >= fence.length) fence = undefined;
-      return line;
+  const source = value.replace(/\r\n/g, "\n");
+  const protectedLines = new Set<number>();
+  for (const token of markdownParser.parse(source, {})) {
+    if (token.map && (["fence", "code_block", "html_block"].includes(token.type) || token.children?.some((child) => child.type === "code_inline"))) {
+      for (let line = token.map[0]; line < token.map[1]; line += 1) protectedLines.add(line);
     }
-    // CLI 3.8.3 can emit block IAL even with --mode md. Never strip code contents.
-    if (fence) return line;
-    if (/^\s*\{:\s+id="\d{14}-[a-z0-9]{7}"[^\r\n]*\}\s*$/.test(line)) return undefined;
-    return line.replace(/^(\s*(?:[-+*]|\d+[.)])\s+)\{:\s+id="\d{14}-[a-z0-9]{7}"[^\r\n]*?\}/, "$1");
-  }).filter((line): line is string => line !== undefined).join("\n").trim();
+  }
+  // Remove block IAL before table parsing, where it otherwise becomes a spurious table row.
+  const withoutBlockAttrs = source.split("\n").map((line, index) => {
+    const attribute = line.match(/^(\s*(?:>\s*)*)\{:\s+id="\d{14}-[a-z0-9]{7}"[^\r\n]*\}\s*$/);
+    return !protectedLines.has(index) && attribute ? attribute[1].trimEnd() : line;
+  }).join("\n");
+  return JSON.stringify(canonicalTokens(markdownParser.parse(withoutBlockAttrs, {})));
+}
+
+function canonicalTokens(tokens: MarkdownToken[], inline = false): unknown[] {
+  const output: { type: string; tag: string; nesting: number; attrs: unknown; content: string; info: string; children: unknown[] | null }[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    let content = token.content;
+    // Only text at a block/line start can be generated IAL. Code, HTML and link labels stay literal.
+    if (inline && token.type === "text" && (index === 0 || tokens[index - 1].type === "softbreak")) {
+      content = content.replace(/^\{:\s+id="\d{14}-[a-z0-9]{7}"[^\r\n]*?\}/, "");
+      if (!content) {
+        if (output.at(-1)?.type === "softbreak") output.pop();
+        continue;
+      }
+    }
+    const children = token.children ? canonicalTokens(token.children, true) : null;
+    if (token.type === "inline" && children?.length === 0 && output.at(-1)?.type === "paragraph_open" && tokens[index + 1]?.type === "paragraph_close") {
+      output.pop(); index += 1; continue;
+    }
+    // map, markup, level and hidden encode source formatting, including tight/loose lists.
+    output.push({ type: token.type, tag: token.tag, nesting: token.nesting, attrs: token.attrs,
+      content: token.type === "inline" ? "" : content, info: token.info, children });
+  }
+  return output;
 }
 
 export async function verifyMarkdown(cli: SiyuanCli, id: string, markdown: string, result: NormalizedResponse): Promise<NormalizedResponse> {

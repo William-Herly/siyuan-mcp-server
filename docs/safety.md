@@ -44,9 +44,11 @@
 
 ## 恢复档案与失败状态
 
-受保护的破坏性调用通过 CLI export sy 生成 `.sy.zip`，保存到 `<SIYUAN_MCP_LOG_DIR>/recovery/`，检查文件大小和 ZIP 文件头。失败则不开始内容修改，不要求初始化思源数据仓库密钥。
+受保护的破坏性调用尝试通过 CLI export sy 生成档案，保存到 `<SIYUAN_MCP_LOG_DIR>/recovery/`。现在检查 ZIP 布局、解压大小上限、原生 NodeDocument JSON 与目标 ID，拒绝只有 ZIP 文件头或 Markdown 内容的伪原生档案。失败返回 BACKUP_FAILED，正文不写入。
 
-recovery 返回文档 ID、recoveryId、archive 路径和 automaticRollback=false。档案包含真实笔记内容，区别于脱敏审计日志；部署者应限制访问、管理保留时间，当前不会自动删除。文件基本检查不是完整恢复演练，也不是并发编辑期间的原子快照。
+**当前 CLI 3.8.3 的真实恢复演练未通过**：export sy 输出的是带 .sy 扩展名的 Markdown，import sy 无法恢复。因而当前后端下，单块更新、含 update/delete 的 patch、全文替换和删除会被安全阻止。创建、追加、插入和重命名不受此备份限制。需要修复后端原生导出并完成恢复演练，才能验收这些破坏性功能；不得改用 HTTP、直接文件操作或降低检查绕过。
+
+recovery 返回文档 ID、recoveryId、archive 路径和 automaticRollback=false。档案包含真实笔记内容，区别于脱敏审计日志；部署者应限制访问、管理保留时间，当前不会自动删除。原生结构检查不是完整恢复演练，也不是并发编辑期间的原子快照。
 
 恢复前先在独立测试笔记本导入并核对内容、附件、属性和引用。导入不等于保留原 ID 的原位回滚。当前没有自动回滚，也不自动 checkout 整库快照；生产恢复仍是明确的管理操作。
 
@@ -60,7 +62,7 @@ recovery 返回文档 ID、recoveryId、archive 路径和 automaticRollback=fals
 | retryable: false | 不应仅因错误自动重复写入 |
 | data.requiresRefresh | 是否需要因验证不足重新确认状态或定位目标 |
 
-正文比较忽略 CLI 生成的块属性标记，保留 fenced code 字面内容；不会证明所有属性或外部引用不变。CLI 规范化差异可能使已完成写入返回验证失败，此时先检查目标，不要盲目重试。
+正文比较使用 Markdown 语法结构忽略 CLI 生成的块属性标记、列表松紧和表格填充空格，保留代码、链接和表格对齐等内容差异；不会证明所有属性或外部引用不变。CLI 规范化差异可能使已完成写入返回验证失败，此时先检查目标，不要盲目重试。
 
 写前记录意图、写后记录结果。意图日志失败阻止命令；结果日志失败仍保留真实执行状态。明确的 handler 前置拒绝也记录日志；SDK 在 handler 前拒绝的 schema 错误不在此审计范围内。
 

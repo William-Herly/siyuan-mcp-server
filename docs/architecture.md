@@ -40,7 +40,7 @@ writeSafety 仅构造固定 SELECT，严格校验 ID 后拼接值。使用 block
 
 ## 备份与验证
 
-单块更新、破坏性 patch、全文替换、独立块/文档删除通过 export sy 生成文档档案。按 UUID 存入日志目录的 recovery 子目录，检查文件头和大小；失败阻止内容写入。档案含真实正文，不是脱敏日志。
+单块更新、破坏性 patch、全文替换、独立块/文档删除通过 export sy 生成文档档案。按 UUID 存入日志目录的 recovery 子目录，检查 ZIP 布局、解压大小上限和匹配目标 ID 的 NodeDocument JSON；失败阻止内容写入。CLI 3.8.3 实测输出 Markdown 伪原生档案，当前这些写入被 BACKUP_FAILED 阻止，待后端修复和恢复验收。档案含真实正文，不是脱敏日志。
 
 创建与追加检查 CLI 结果；插入另检查位置；改名只回查标题；单块更新只读取目标；patch 合并查询 update/delete 结果；全文替换读正文一次。没有重试、重写、再验证循环。
 

@@ -1,3 +1,4 @@
+import { zipSync, strToU8 } from "fflate";
 import { afterEach, describe, expect, it } from "vitest";
 import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -5,7 +6,7 @@ import path from "node:path";
 import { z } from "zod/v4";
 import { SiyuanCli } from "../src/cli.js";
 import { registerTools } from "../src/tools.js";
-import { normalizeMarkdown } from "../src/writeSafety.js";
+import { normalizeMarkdown, validateNativeArchive } from "../src/writeSafety.js";
 import { runAuditedWrite } from "../src/toolHelpers.js";
 import type { ServerConfig } from "../src/config.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -15,7 +16,7 @@ const row = (id: string, root_id = DOC, parent_id = DOC, type = "p", markdown = 
 const directories: string[] = [];
 afterEach(async () => { for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }); });
 
-async function fixture(options: { dangerous?: boolean; readonly?: boolean; fail?: string; rows?: ReturnType<typeof row>[]; unknownType?: boolean } = {}) {
+async function fixture(options: { dangerous?: boolean; readonly?: boolean; fail?: string; rows?: ReturnType<typeof row>[]; invalidArchive?: boolean; unknownType?: boolean } = {}) {
   const logDir = await mkdtemp(path.join(tmpdir(), "siyuan-safety-test-")); directories.push(logDir);
   const config: ServerConfig = { workspace: "MOCK", cliPath: "NEVER_EXECUTE", logDir, timeoutMs: 100, allowWrite: !options.readonly, allowDangerous: options.dangerous ?? false, toolProfile: "full" };
   const rows = options.rows ?? [row(DOC, DOC, "", "d", ""), row(BLOCK), row(CHILD, DOC, BLOCK), row(OTHER)];
@@ -30,7 +31,7 @@ async function fixture(options: { dangerous?: boolean; readonly?: boolean; fail?
       const query = args.at(-1)!;
       return ok(rows.filter((r) => query.includes("WHERE root_id") ? r.root_id === DOC : query.includes(`'${r.id}'`)).map((r) => options.unknownType ? { ...r, type: "future_type" } : r));
     }
-    if (args.includes("export")) { await writeFile(args[args.indexOf("--output") + 1], Buffer.concat([Buffer.from([80,75,3,4]), Buffer.alloc(30)])); return ok(""); }
+    if (args.includes("export")) { await writeFile(args[args.indexOf("--output") + 1], options.invalidArchive ? zipSync({"fake.sy":strToU8("# Markdown is not native SY")}) : zipSync({ ["fixture/20260908154051-h3ysj72.sy"]: strToU8(JSON.stringify({ID:"20260908154051-h3ysj72",Type:"NodeDocument",Children:[]})) })); return ok(""); }
     if (args.includes("rename")) title = args[args.indexOf("--title") + 1];
     if (args.includes("get")) return ok({ id, ial: { title } });
     if (args.includes("update")) rows.find((r) => r.id === id)!.markdown = args[args.indexOf("--data") + 1];
@@ -48,6 +49,12 @@ async function fixture(options: { dangerous?: boolean; readonly?: boolean; fail?
 }
 
 describe("write boundaries", () => {
+  it.each(["siyuan_update_block", "siyuan_patch_blocks", "siyuan_replace_document_body", "siyuan_delete_block", "siyuan_remove_document"])("rejects Markdown disguised as native backup before %s", async (name) => {
+    const f = await fixture({ dangerous: true, invalidArchive: true });
+    const args = name === "siyuan_patch_blocks" ? { documentId: DOC, operations: [{op:"append",parent:DOC,markdown:"new"},{op:"delete",id:BLOCK}] } : {id: name === "siyuan_replace_document_body" || name === "siyuan_remove_document" ? DOC : BLOCK, markdown:"new"};
+    expect(await f.call(name,args)).toMatchObject({ok:false,code:"BACKUP_FAILED",execution:"not-started",retryable:false});
+    expect(f.calls.every((args) => args.includes("sql") || args.includes("export"))).toBe(true);
+  });
   it.each(["siyuan_update_block", "siyuan_delete_block", "siyuan_patch_blocks"])("rejects document roots in %s before any mutation", async (name) => {
     const f = await fixture({ dangerous: true });
     const args = name === "siyuan_patch_blocks" ? { documentId: DOC, operations: [{ op: "delete", id: DOC }] } : { id: DOC, markdown: "title" };
@@ -180,8 +187,56 @@ describe("audit failure semantics", () => {
 });
 
 it("removes CLI-generated block IAL but preserves fenced code literals", () => {
-  expect(normalizeMarkdown(`text\n{: id="${BLOCK}" updated="123"}`)).toBe("text");
+  expect(normalizeMarkdown(`text\n{: id="${BLOCK}" updated="123"}`)).toBe(normalizeMarkdown("text"));
   const code = `\`\`\`\n{: id="${BLOCK}"}\n\`\`\``;
-  expect(normalizeMarkdown(code)).toBe(code);
-  expect(normalizeMarkdown(`- {: id="${BLOCK}" updated="123"}item\n  {: id="${CHILD}"}`)).toBe("- item");
+  expect(normalizeMarkdown(code)).not.toBe(normalizeMarkdown("```\n\n```"));
+  expect(normalizeMarkdown(`- {: id="${BLOCK}" updated="123"}item\n  {: id="${CHILD}"}`)).toBe(normalizeMarkdown("- item"));
+});
+
+describe("Markdown verification regressions", () => {
+  it("ignores serializer spacing and IAL in nested lists", () => {
+    const actual = `- {: id="${BLOCK}"}Parent\n  {: id="${CHILD}"}\n\n  - {: id="${OTHER}"}Child\n    {: id="${CHILD}"}\n{: id="${DOC}"}`;
+    expect(normalizeMarkdown(actual)).toBe(normalizeMarkdown("- Parent\n  - Child"));
+  });
+  it("ignores table padding and quote metadata, but preserves alignment and values", () => {
+    const actual = `|A|B|\n| ------| ----|\n|中文|🙂|\n{: id="${BLOCK}"}\n\n> Quote\n> {: id="${CHILD}"}\n>\n{: id="${OTHER}"}`;
+    const expected = "| A | B |\n| --- | --- |\n| 中文 | 🙂 |\n\n> Quote";
+    expect(normalizeMarkdown(actual)).toBe(normalizeMarkdown(expected));
+    expect(normalizeMarkdown(actual)).not.toBe(normalizeMarkdown(expected.replace("中文", "changed")));
+    expect(normalizeMarkdown(actual)).not.toBe(normalizeMarkdown(expected.replace("--- | ---", "---: | ---")));
+  });
+  it.each([
+    `    {: id="${BLOCK}"}`,
+    `~~~\n{: id="${BLOCK}"}\n~~~`,
+    `\`literal\n{: id="${BLOCK}"}\ncode\``,
+    `[{: id="${BLOCK}"}](https://example.com)`,
+    `\`\`\`\n\`\`\`not-a-closing-fence\n{: id="${BLOCK}"}\n\`\`\``
+  ])("preserves IAL-like literal content: %s", (markdown) => {
+    expect(normalizeMarkdown(markdown)).not.toBe(normalizeMarkdown(markdown.replace(`{: id="${BLOCK}"}`, "")));
+  });
+  it("preserves code spaces, hard breaks, link destinations and nesting", () => {
+    for (const [a, b] of [["```\na  b\n```", "```\na b\n```"], ["a  \nb", "a\nb"], ["[x](https://a.example)", "[x](https://b.example)"], ["- a\n  - b", "- a\n- b"]]) {
+      expect(normalizeMarkdown(a)).not.toBe(normalizeMarkdown(b));
+    }
+  });
+});
+
+describe("native recovery archive validation", () => {
+  const native = strToU8(JSON.stringify({ID:DOC,Type:"NodeDocument",Children:[]}));
+  it("accepts native document structure in an import directory", () => {
+    expect(() => validateNativeArchive(zipSync({[`notebook/${DOC}.sy`]:native}),DOC)).not.toThrow();
+  });
+  it.each([
+    {[`notebook/${DOC}.sy`]:strToU8("# Markdown")},
+    {[`${DOC}.sy`]:native},
+    {[`../${DOC}.sy`]:native},
+    {[`notebook/${OTHER}.sy`]:native},
+    {[`notebook/${DOC}.sy`]:native,"another/file.txt":strToU8("x")},
+    {"notebook/empty.txt":strToU8("x")}
+  ])("rejects invalid or incomplete native archives", (entries) => {
+    expect(() => validateNativeArchive(zipSync(entries as Record<string,Uint8Array>),DOC)).toThrow();
+  });
+  it("rejects ZIP signature without an archive", () => {
+    expect(() => validateNativeArchive(new Uint8Array([80,75,3,4,...Array(30).fill(0)]),DOC)).toThrow();
+  });
 });
