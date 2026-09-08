@@ -1,44 +1,16 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { ServerConfig, ToolProfile } from "./config.js";
+import { serializeOperation } from "./writeSafety.js";
+import { auditWrite } from "./audit.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { NormalizedResponse } from "./types.js";
+import { textResult } from "./toolHelpers.js";
+import { isToolExposed } from "./toolProfiles.js";
+import type { ServerConfig } from "./config.js";
 import { SiyuanCli } from "./cli.js";
 import { registerDatabaseTools } from "./databaseTools.js";
 import { registerDangerousTools } from "./dangerousTools.js";
 import { registerReadTools } from "./readTools.js";
 import { registerWriteTools } from "./writeTools.js";
-
-const MINIMAL_TOOLS = new Set([
-  "siyuan_health",
-  "siyuan_list_notebooks",
-  "siyuan_search",
-  "siyuan_document_list",
-  "siyuan_get_document_kramdown",
-  "siyuan_get_outline",
-  "siyuan_get_block_kramdown",
-  "siyuan_get_block_children",
-  "siyuan_batch_get_kramdown",
-  "siyuan_block_breadcrumb",
-  "siyuan_get_backlinks"
-]);
-
-const STANDARD_WRITE_TOOLS = [
-  "siyuan_create_document",
-  "siyuan_append_block",
-  "siyuan_insert_block",
-  "siyuan_update_block",
-  "siyuan_patch_blocks",
-  "siyuan_replace_document_body",
-  "siyuan_append_daily_note"
-];
-
-const STANDARD_EXTRA_TOOLS = [
-  "siyuan_document_info",
-  "siyuan_document_search",
-  "siyuan_get_block",
-  "siyuan_batch_get_blocks",
-  "siyuan_block_stat"
-];
-
-const STANDARD_TOOLS = new Set([...MINIMAL_TOOLS, ...STANDARD_WRITE_TOOLS, ...STANDARD_EXTRA_TOOLS]);
 
 /**
  * Registers SiYuan MCP tools according to the configured profile.
@@ -49,26 +21,37 @@ const STANDARD_TOOLS = new Set([...MINIMAL_TOOLS, ...STANDARD_WRITE_TOOLS, ...ST
  * - full: every tool, including dangerous-gated tools
  */
 export function registerTools(server: McpServer, config: ServerConfig, cli = new SiyuanCli(config)): void {
-  const filteredServer = filterServerForProfile(server, config.toolProfile);
+  const filteredServer = filterServerForProfile(server, config);
 
   registerReadTools(filteredServer, config, cli);
   registerDatabaseTools(filteredServer, config, cli);
   registerWriteTools(filteredServer, config, cli);
 
   if (config.toolProfile === "full") {
-    registerDangerousTools(server, config, cli);
+    registerDangerousTools(filteredServer, config, cli);
   }
 }
 
-function filterServerForProfile(server: McpServer, profile: ToolProfile): McpServer {
-  if (profile === "full") {
-    return server;
-  }
-
-  const allowedTools = profile === "standard" ? STANDARD_TOOLS : MINIMAL_TOOLS;
+function filterServerForProfile(server: McpServer, config: ServerConfig): McpServer {
   return {
     registerTool(name: string, ...args: unknown[]) {
-      if (allowedTools.has(name)) {
+      if (isToolExposed(name, config.toolProfile)) {
+        const handler = args[args.length - 1];
+        if (typeof handler === "function") {
+          // One queue also prevents reads from observing this server's half-finished batch.
+          args[args.length - 1] = (...input: unknown[]) => serializeOperation(async () => {
+            const result = await handler(...input) as CallToolResult;
+            const response = result.structuredContent;
+            if (response?.ok === false && response.execution === "not-started" && response.code !== "AUDIT_UNAVAILABLE") {
+              try {
+                await auditWrite(config, String(response.command), { ...(input[0] as Record<string, unknown>), auditPhase: "rejected" }, false, response as NormalizedResponse);
+              } catch {
+                return textResult({ ...response, audit: "failed", warnings: [...(response.warnings as string[] ?? []), "The rejected write could not be recorded in the audit log."] });
+              }
+            }
+            return result;
+          });
+        }
         return (server.registerTool as (...registerArgs: unknown[]) => unknown)(name, ...args);
       }
 

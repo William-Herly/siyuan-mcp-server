@@ -1,163 +1,59 @@
 # 架构设计
 
-本文面向维护者，说明 `siyuan-mcp-server` 的职责边界、权限模型和关键设计取舍。安装和使用方法直接见项目 README。
-
-## 目标
-
-通过命名明确、参数结构化的 MCP 工具，让 AI Agent 使用思源 CLI 读写本地工作空间，同时避免模型自行拼接命令或直接访问本地 HTTP API。
+服务端负责工具语义、权限、目标校验和准确执行结果；宿主负责 MCP 之外的访问路径。用户可见边界见[写入保护](safety.md)。
 
 ```text
-Agent 请求
-  → MCP schema 校验
-  → 工具配置与权限检查
-  → CLI 参数构造
-  → SiYuan CLI 执行
-  → 输出解析与规范化
-  → MCP 结果
+MCP schema → profile 过滤 → 串行调度 → 权限与目标检查
+  → 按风险备份 → CLI 参数数组执行 → 按范围验证 → 审计与结果
 ```
 
-## 设计原则
+不提供任意命令工具或写 SQL。CLI 通过 spawn(file, args) 执行，不用 shell 字符串插值。
 
-1. 优先提供结构化工具，不暴露通用命令执行入口。
-2. 默认使用最小只读工具集。
-3. 工具是否暴露与工具是否获准执行分开控制。
-4. CLI 支持时统一请求 JSON 输出。
-5. 普通写入保持直接和轻量，不为每次写入自动增加回读、快照或回滚。
-6. 多步操作的非事务性和部分进度必须在描述与结果中明确体现。
-7. 所有写入尝试都记录经过脱敏的审计信息。
-
-## 模块结构
+## 模块
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/index.ts` | 创建 MCP Server，注册服务器说明和工具 |
-| `src/tools.ts` | 按配置过滤工具 |
-| `src/readTools.ts` | 读取、搜索、文档、块和仓库查询工具 |
-| `src/writeTools.ts` | 文档、块、日记和普通写入工具 |
-| `src/databaseTools.ts` | 数据库查询和受控数据库写入 |
-| `src/dangerousTools.ts` | 删除、回滚和清理等危险工具 |
-| `src/argBuilders.ts` | 将结构化输入转换为 CLI 参数数组 |
-| `src/cli.ts` | 启动 CLI、处理超时并规范化输出 |
-| `src/toolHelpers.ts` | 注册工具、检查权限和执行审计写入 |
-| `src/audit.ts` | 写入脱敏日志 |
-| `src/serverMetadata.ts` | 版本来源和 MCP 初始化说明 |
+| src/index.ts、src/serverMetadata.ts | stdio 入口、版本和初始化规则 |
+| src/toolProfiles.ts | 工具暴露集合、核心写能力状态 |
+| src/tools.ts | 过滤注册、串行调度、拒绝审计 |
+| src/readTools.ts | 读取、搜索、health、导出 |
+| src/writeTools.ts | 写入、patch 和全文替换 |
+| src/writeSafety.ts | 目标、类型/归属、恢复档案和验证 |
+| src/databaseTools.ts、src/dangerousTools.ts | 数据库及管理操作 |
+| src/toolHelpers.ts | 注册、权限、审计执行、结果封装 |
+| src/cli.ts、src/argBuilders.ts | CLI 执行、超时、参数与输出 |
+| src/audit.ts | JSONL 日志、正文脱敏 |
 
-## 工具暴露与权限
+## 权限与发现
 
-工具配置决定 Agent 能看到什么：
+minimal 默认只读；standard 提供日常工具和重命名；full 提供管理集合。profile 控制暴露，环境变量控制执行。全文替换在 standard 可见但需要危险权限。health 与注册共用 profile 定义。
 
-- `minimal`：最小只读工具集，默认值。
-- `standard`：增加日常文档和内容块维护工具。
-- `full`：注册全部工具，包括需要危险权限的工具。
+初始化说明、工具描述、schema、失败结果共同说明能力边界。仓库 Markdown 不会自动成为 Agent 指令。缺失能力不能通过直接 HTTP 或文件操作自动补齐。
 
-环境变量决定已经暴露的工具能否执行：
+## 目标检查与调度
 
-- `SIYUAN_MCP_ALLOW_WRITE=true`：允许普通写入。
-- `SIYUAN_MCP_ALLOW_DANGEROUS=true`：允许删除文档、回滚、清理等危险操作。
+writeSafety 仅构造固定 SELECT，严格校验 ID 后拼接值。使用 blocks 表的 d、p 等类型，未知类型拒绝；CLI block get 的 NodeDocument 不会被当作普通内容块。
 
-选择 `standard` 或 `full` 不会自动获得写入权限。危险权限也不应作为日常默认配置。
+单操作查询目标；patch 一次查询文档关系元数据，确认归属、parent/previous、重复破坏性目标和祖先冲突。关系查询不读取整篇 Markdown。标题区段破坏性操作单独执行。append/insert 支持多块内容，update 只允许单块。
 
-## 命令执行
+同进程调用串行执行，但不能锁定思源 UI 或其他进程；队列不是事务、旧版本检查或条件写入。
 
-服务器通过 Node.js 进程参数数组调用 CLI，不使用插值后的 shell 字符串：
+## 备份与验证
 
-```ts
-[
-  cliPath,
-  "--workspace",
-  workspacePath,
-  "--format",
-  "json",
-  "search",
-  query,
-  "--page-size",
-  String(pageSize)
-]
-```
+单块更新、破坏性 patch、全文替换、独立块/文档删除通过 export sy 生成文档档案。按 UUID 存入日志目录的 recovery 子目录，检查文件头和大小；失败阻止内容写入。档案含真实正文，不是脱敏日志。
 
-这可以避免路径、Markdown 或查询内容被 shell 再次解释。项目不会提供通用的 `run_siyuan_command` 工具。
+创建与追加检查 CLI 结果；插入另检查位置；改名只回查标题；单块更新只读取目标；patch 合并查询 update/delete 结果；全文替换读正文一次。没有重试、重写、再验证循环。
 
-## 结果规范
+全文替换冻结初始顶层块 ID、倒序删除、识别明确的空段落、追加一次正文、清理记录的占位块。占位信息不完整时不猜测删除。追加失败后不继续清理。各失败点保留进度，外层附上档案信息。
 
-工具结果使用统一的外层字段：
+Markdown 比较忽略生成 IAL，保留 fenced code 中的字面内容；比较失败不证明写入没发生，也不验证所有属性、引用或并发结果。自动回滚、旧版本令牌和幂等存储未实现。
 
-- `ok`：操作是否成功。
-- `data`：CLI JSON 或经过规范化的数据。
-- `warnings`：调用者需要关注的非致命信息。
-- `command`：命令类别，不包含认证信息。
-- `raw`：仅在解析失败等调试场景下返回，并限制长度。
+## 结果与审计
 
-结构变化时，相关写入工具还会返回 `requiresRefresh`，提示调用者在继续依赖旧块 ID 前重新读取。
+保留 ok、data、warnings、command、必要时有界 raw。失败工具结果映射为 MCP isError:true，执行状态与验证状态分开，字段见[写入保护](safety.md)。
 
-## 写入与回读策略
+CLI 写调用先记录 intent，再执行，再记录 result。写前日志失败为 not-started；写后日志失败保留执行结果。非零退出和超时保守视为 unknown，禁止盲目重试。明确的 handler 前置拒绝也记录日志。
 
-默认只执行成本较低的约束：
+Markdown 在日志 input 中替换为长度、字节数和 SHA-256。档案内容、原始 CLI 错误和其他属性不应被当成全部经过正文脱敏，提交诊断前仍需审查。
 
-- schema 和 Markdown 输入校验
-- 工具配置与权限检查
-- 不经 shell 的参数数组调用
-- 有界的输出规范化
-- 正文脱敏后的写入审计
-- 多步写入的部分进度报告
-
-回读验证、快照、文档完整性检查和回滚属于调用者可选工作流，而不是每次写入的隐式步骤。
-
-具体行为：
-
-| 写入类型 | 自动回读正文 | 刷新提示 |
-| --- | --- | --- |
-| 创建、追加、插入 | 否 | 通常不需要 |
-| 单块更新 | 否 | 警告块 ID 可能变化 |
-| 批量追加、插入 | 否 | `requiresRefresh: false` |
-| 批量更新、删除 | 否 | `requiresRefresh: true` |
-| 整篇正文替换 | 否 | `requiresRefresh: true` |
-
-自动化测试可以主动读取写入结果进行验证，但这不会改变生产工具的执行路径。
-
-## 整篇正文替换
-
-思源 CLI 没有保留文档 ID 的单命令正文替换能力，因此 `siyuan_replace_document_body` 使用固定流程：
-
-1. 枚举并冻结初始顶层块 ID 集合。
-2. 倒序删除该固定集合。
-3. 枚举一次思源生成的空段落占位块。
-4. 一次性追加完整 Markdown。
-5. 删除已经记录的占位块。
-
-第二次枚举用于识别占位块，不是正文回读验证。工具不会改变初始删除集合，也不会在写入后读取整篇文档。
-
-该流程是非事务性的：不创建隐式快照，也不会在失败后自动回滚。失败结果必须报告已经删除的块数量、失败位置和正文是否已经追加。
-
-## Markdown 校验
-
-写入参数共享轻量 Markdown 校验：
-
-- 拦截异常控制字符。
-- 检查高置信度的裸 KaTeX 命令。
-- 思源行内公式使用 `$...$`。
-- fenced code block、缩进代码块和行内代码中的 `$` 不参与公式解析。
-- 校验输入字符串，但不自动改写或回读写入后的正文。
-
-## 审计
-
-普通写入和危险写入都会追加 JSONL 审计记录。Markdown 正文替换为字符数、UTF-8 字节数和 SHA-256，不写入原文。日志还包括时间、工作空间、命令类别、结果和警告。
-
-日志不得包含认证头、API Token、同步密钥或完整思源配置。
-
-## MCP 工具发现
-
-服务器初始化说明将本服务声明为思源笔记操作的首选接口，并明确要求不要绕过 MCP 直接调用本地 HTTP API。
-
-Skill 可以补充团队特定的笔记模板、引用规则和工作流，但不是发现或调用 MCP 工具的必要依赖。
-
-## 暂不实现
-
-以下能力只有在出现可复现问题或明确工作流需求时再考虑：
-
-- 每次写入后的自动回读
-- 默认快照和自动回滚
-- 乐观版本号和幂等存储
-- Markdown 临时文件传输
-- 强制配套 Skill
-
-不要把补偿恢复描述为原子事务，也不要直接修改 `.sy` 文件。
+MCP 不公开 dryRun。内部参数构造保留 dry-run 支持，但正常调用获准后直接执行，没有要求 Agent 先 dry-run 的隐式流程。

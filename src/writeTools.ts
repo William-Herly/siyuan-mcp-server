@@ -11,23 +11,24 @@ import {
   normalizeCreateDocumentParentPath,
   registerCliTool,
   requireWrite,
+  requireDangerous,
   runAuditedWrite,
   withDryRun
 } from "./toolHelpers.js";
+
+import { BLOCK_ID, backupDocument, checkInsertion, normalizeMarkdown, readTargets, requireTarget, safetyError, verifyMarkdown } from "./writeSafety.js";
 
 const patchOperationSchema = z.discriminatedUnion("op", [
   z.object({
     op: z.literal("append"),
     parent: z.string().min(1),
-    markdown: writableMarkdownSchema().optional(),
-    file: z.string().min(1).optional()
+    markdown: writableMarkdownSchema()
   }),
   z.object({
     op: z.literal("insert"),
     parent: z.string().min(1),
     previous: z.string().min(1).optional(),
-    markdown: writableMarkdownSchema().optional(),
-    file: z.string().min(1).optional()
+    markdown: writableMarkdownSchema()
   }),
   z.object({
     op: z.literal("update"),
@@ -53,7 +54,7 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
     server,
     "siyuan_create_snapshot",
     "Creates a SiYuan repo snapshot. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
-    { memo: z.string().min(1).optional(), dryRun: z.boolean().default(true) },
+    { memo: z.string().min(1).optional(), dryRun: z.boolean().default(false) },
     async ({ memo, dryRun }) => {
       const permission = requireWrite(config, "repo_create");
       if (permission) {
@@ -72,7 +73,7 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
     server,
     "siyuan_repo_tag",
     "Tags a repository snapshot. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
-    { id: z.string().min(1), name: z.string().min(1), dryRun: z.boolean().default(true) },
+    { id: z.string().min(1), name: z.string().min(1), dryRun: z.boolean().default(false) },
     async ({ id, name, dryRun }) => guardedWrite(config, cli, "repo_tag", ["repo", "tag", "--id", id, "--name", name], { id, name, dryRun }, dryRun)
   );
 
@@ -80,7 +81,7 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
     server,
     "siyuan_repo_untag",
     "Removes a repository snapshot tag. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
-    { name: z.string().min(1), dryRun: z.boolean().default(true) },
+    { name: z.string().min(1), dryRun: z.boolean().default(false) },
     async ({ name, dryRun }) => guardedWrite(config, cli, "repo_untag", ["repo", "untag", "--name", name], { name, dryRun }, dryRun)
   );
 
@@ -116,7 +117,7 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
     "Creates today's daily note in a notebook. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
     {
       notebook: z.string().min(1),
-      dryRun: z.boolean().default(true)
+      dryRun: z.boolean().default(false)
     },
     async ({ notebook, dryRun }) => {
       const permission = requireWrite(config, "dailynote_create");
@@ -142,7 +143,7 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
     {
       notebook: z.string().min(1),
       markdown: writableMarkdownSchema(),
-      dryRun: z.boolean().default(true)
+      dryRun: z.boolean().default(false)
     },
     async ({ notebook, markdown, dryRun }) => {
       const permission = requireWrite(config, "dailynote_prepend");
@@ -167,10 +168,9 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
     "Appends markdown under a parent block. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
     {
       parent: z.string().min(1),
-      markdown: writableMarkdownSchema().optional(),
-      file: z.string().min(1).optional()
+      markdown: writableMarkdownSchema()
     },
-    async ({ parent, markdown, file }) => writeBlockChild(config, cli, "block_append", "append", parent, markdown, file, false)
+    async ({ parent, markdown }) => writeBlockChild(config, cli, "block_append", "append", parent, markdown, false)
   );
 
   registerCliTool(
@@ -179,11 +179,10 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
     "Prepends markdown under a parent block. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
     {
       parent: z.string().min(1),
-      markdown: writableMarkdownSchema().optional(),
-      file: z.string().min(1).optional(),
-      dryRun: z.boolean().default(true)
+      markdown: writableMarkdownSchema(),
+      dryRun: z.boolean().default(false)
     },
-    async ({ parent, markdown, file, dryRun }) => writeBlockChild(config, cli, "block_prepend", "prepend", parent, markdown, file, dryRun)
+    async ({ parent, markdown, dryRun }) => writeBlockChild(config, cli, "block_prepend", "prepend", parent, markdown, dryRun)
   );
 
   registerCliTool(
@@ -246,13 +245,29 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
   registerCliTool(
     server,
     "siyuan_rename_document",
-    "Renames a document. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
+    "Changes only a document title through the dedicated rename command. Never use block update to rename. Verifies title metadata without reading the body. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
     {
       id: z.string().min(1),
       title: z.string().min(1),
-      dryRun: z.boolean().default(true)
+      dryRun: z.boolean().default(false)
     },
-    async ({ id, title, dryRun }) => guardedWrite(config, cli, "document_rename", ["document", "rename", "--id", id, "--title", title], { id, title, dryRun }, dryRun)
+    async ({ id, title, dryRun }) => {
+      const permission = requireWrite(config, "document_rename");
+      if (permission) return permission;
+      const targets = await readTargets(cli, [id], "document_rename");
+      if (!(targets instanceof Map)) return targets;
+      const invalid = requireTarget(targets.get(id)!, "document", "document_rename");
+      if (invalid) return invalid;
+      const result = await guardedWrite(config, cli, "document_rename", ["document", "rename", "--id", id, "--title", title], { id, title, dryRun }, dryRun);
+      if (!result.ok || dryRun) return result;
+      const check = await cli.run("document_rename_verify", ["block", "get", "--id", id]);
+      const value = check.data as { id?: string; ial?: { title?: string } } | undefined;
+      const passed = check.ok && value?.id === id && value.ial?.title === title;
+      return { ...result, ok: passed, verification: passed ? "passed" : "unknown",
+        ...(passed ? {} : { code: "VERIFICATION_FAILED" }),
+        data: { id, title, requiresRefresh: !passed },
+        warnings: [...result.warnings, ...(passed ? [] : ["Rename ran, but the title could not be verified. Do not retry blindly."])] };
+    }
   );
 
   registerCliTool(
@@ -269,7 +284,7 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
       ),
       parentPath: z.string().optional().describe("Internal SiYuan parent path, such as /20251202114556-abcdefg. Do not use a human-readable path."),
       createSnapshot: z.boolean().default(true),
-      dryRun: z.boolean().default(true)
+      dryRun: z.boolean().default(false)
     },
     async ({ sourceId, notebook, title, markdown, parentPath, createSnapshot, dryRun }) => {
       const permission = requireWrite(config, "document_reorganize");
@@ -356,7 +371,7 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
       notebook: z.string().min(1),
       path: z.string().optional(),
       hpath: z.string().optional(),
-      dryRun: z.boolean().default(true)
+      dryRun: z.boolean().default(false)
     },
     async ({ id, notebook, path, hpath, dryRun }) =>
       guardedWrite(
@@ -375,7 +390,7 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
     "Duplicates a document. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
     {
       id: z.string().min(1),
-      dryRun: z.boolean().default(true)
+      dryRun: z.boolean().default(false)
     },
     async ({ id, dryRun }) => guardedWrite(config, cli, "document_duplicate", ["document", "duplicate", "--id", id], { id, dryRun }, dryRun)
   );
@@ -386,26 +401,29 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
     "Inserts markdown under a parent block, optionally after a previous sibling. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
     {
       parent: z.string().min(1),
-      markdown: writableMarkdownSchema().optional(),
-      file: z.string().min(1).optional(),
+      markdown: writableMarkdownSchema(),
       previous: z.string().min(1).optional()
     },
-    async ({ parent, markdown, file, previous }) => {
+    async ({ parent, markdown, previous }) => {
       const permission = requireWrite(config, "block_insert");
       if (permission) {
         return permission;
       }
-      const content = blockContentArgs(markdown, file);
+      const content = blockContentArgs(markdown);
       if ("error" in content) {
         return content.error;
       }
 
+      const targets = await readTargets(cli, [parent, ...(previous ? [previous] : [])], "block_insert");
+      if (!(targets instanceof Map)) return targets;
+      const invalidTarget = checkInsertion(targets, parent, previous, "block_insert");
+      if (invalidTarget) return invalidTarget;
       return runAuditedWrite(
         config,
         cli,
         "block_insert",
         ["block", "insert", "--parent", parent, ...content.args, ...(previous ? ["--previous", previous] : [])],
-        { parent, markdown, file, previous, dryRun: false },
+        { parent, markdown, previous, dryRun: false },
         false
       );
     }
@@ -414,7 +432,7 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
   registerCliTool(
     server,
     "siyuan_update_block",
-    "Updates exactly one existing SiYuan content block. One top-level list item counts as one block; use insert or append for multiple sibling items or sections. The replacement may have a new block ID, so re-read before further edits. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
+    "Updates exactly one existing SiYuan content block. One top-level list item counts as one block; use insert or append for multiple sibling items or sections. Document roots are rejected. Creates one document recovery archive and verifies only the target block; use the returned ID on success. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
     {
       id: z.string().min(1),
       markdown: writableMarkdownSchema(
@@ -428,18 +446,19 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
   registerCliTool(
     server,
     "siyuan_patch_blocks",
-    "Edits an existing SiYuan document using 1-20 ordered append/insert/update/delete block operations. All inputs are validated before writing, but execution is not transactional and runtime failures do not roll back earlier operations. Deleting a parent block also deletes its children. An update replaces one block and may change its ID; re-read the document after structural changes. Use insert or append for multi-block Markdown. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
+    "Applies 1-20 operations within documentId. Prechecks target types, scope and conflicting ancestor/target dependencies before writing. Update/delete creates one document recovery archive per call. No automatic rollback. Returns final verification and partial progress; do not repeat verified writes or blindly retry a failed batch. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
     {
+      documentId: z.string().min(1).describe("Document containing every operation target."),
       operations: z.array(patchOperationSchema).min(1).max(20).describe("Ordered operations; maximum 20 per call."),
       dryRun: z.boolean().default(false)
     },
-    async ({ operations, dryRun }) => patchBlocksDirectly(config, cli, operations, dryRun)
+    async ({ documentId, operations, dryRun }) => patchBlocksDirectly(config, cli, documentId, operations, dryRun)
   );
 
   registerCliTool(
     server,
     "siyuan_replace_document_body",
-    "Replaces all body content of an existing SiYuan document while retaining its document ID. The tool deletes the fixed initial top-level block set, internally identifies SiYuan's generated empty placeholder, appends the new Markdown once, and removes that placeholder. It does not read back the document body. The workflow is non-transactional and does not create a snapshot or roll back. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
+    "Replaces the complete document body, preserving its document ID. Only for an explicitly requested full rewrite, never for titles or local edits. Creates a document recovery archive and verifies the body once internally. Non-transactional; no automatic rollback. Requires SIYUAN_MCP_ALLOW_DANGEROUS=true.",
     {
       id: z.string().min(1).describe("Existing SiYuan document ID."),
       markdown: writableMarkdownSchema(false, "Complete replacement Markdown body. Pass an empty string to clear the body.")
@@ -450,11 +469,11 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
   registerCliTool(
     server,
     "siyuan_set_attrs",
-    "Sets custom attributes on a block. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
+    "Sets block attributes except reserved identity/title/timestamp fields. Use rename_document for document titles. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
     {
       id: z.string().min(1),
       attrs: z.record(z.string().min(1), z.string()),
-      dryRun: z.boolean().default(true)
+      dryRun: z.boolean().default(false)
     },
     async ({ id, attrs, dryRun }) => {
       const permission = requireWrite(config, "attr_set");
@@ -468,6 +487,10 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
           warnings: ["attrs must contain at least one key-value pair."],
           command: "attr_set"
         };
+      }
+
+      if (Object.keys(attrs).some((key) => ["id", "title", "type", "updated", "created"].includes(key.toLowerCase()))) {
+        return safetyError("attr_set", "RESERVED_ATTRIBUTE", "Identity, title and timestamp attributes cannot be changed through this tool. Use the dedicated document tool.");
       }
 
       return runAuditedWrite(
@@ -487,7 +510,7 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
     "Creates a notebook. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
     {
       name: z.string().min(1),
-      dryRun: z.boolean().default(true)
+      dryRun: z.boolean().default(false)
     },
     async ({ name, dryRun }) => guardedWrite(config, cli, "notebook_create", ["notebook", "create", "--name", name], { name, dryRun }, dryRun)
   );
@@ -499,7 +522,7 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
     {
       id: z.string().min(1),
       name: z.string().min(1),
-      dryRun: z.boolean().default(true)
+      dryRun: z.boolean().default(false)
     },
     async ({ id, name, dryRun }) => guardedWrite(config, cli, "notebook_rename", ["notebook", "rename", "--id", id, "--name", name], { id, name, dryRun }, dryRun)
   );
@@ -510,7 +533,7 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
     "Opens a notebook. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
     {
       id: z.string().min(1),
-      dryRun: z.boolean().default(true)
+      dryRun: z.boolean().default(false)
     },
     async ({ id, dryRun }) => guardedWrite(config, cli, "notebook_open", ["notebook", "open", "--id", id], { id, dryRun }, dryRun)
   );
@@ -521,7 +544,7 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
     "Closes a notebook. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
     {
       id: z.string().min(1),
-      dryRun: z.boolean().default(true)
+      dryRun: z.boolean().default(false)
     },
     async ({ id, dryRun }) => guardedWrite(config, cli, "notebook_close", ["notebook", "close", "--id", id], { id, dryRun }, dryRun)
   );
@@ -530,7 +553,7 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
     server,
     "siyuan_set_notebook_icon",
     "Sets a notebook icon. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
-    { id: z.string().min(1), icon: z.string().min(1), dryRun: z.boolean().default(true) },
+    { id: z.string().min(1), icon: z.string().min(1), dryRun: z.boolean().default(false) },
     async ({ id, icon, dryRun }) => guardedWrite(config, cli, "notebook_set_icon", ["notebook", "set-icon", "--id", id, "--icon", icon], { id, icon, dryRun }, dryRun)
   );
 
@@ -538,7 +561,7 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
     server,
     "siyuan_random_notebook_icon",
     "Sets a random notebook icon. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
-    { id: z.string().min(1).optional(), dryRun: z.boolean().default(true) },
+    { id: z.string().min(1).optional(), dryRun: z.boolean().default(false) },
     async ({ id, dryRun }) => {
       const args = ["notebook", "random-icon"];
       if (id) {
@@ -552,7 +575,7 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
     server,
     "siyuan_move_block",
     "Moves a block under another parent, optionally after a previous sibling. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
-    { id: z.string().min(1), parent: z.string().min(1), previous: z.string().min(1).optional(), dryRun: z.boolean().default(true) },
+    { id: z.string().min(1), parent: z.string().min(1), previous: z.string().min(1).optional(), dryRun: z.boolean().default(false) },
     async ({ id, parent, previous, dryRun }) => {
       const args = ["block", "move", "--id", id, "--parent", parent];
       if (previous) {
@@ -566,7 +589,7 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
     server,
     "siyuan_ref_refresh",
     "Refreshes backlink indexes for a block. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
-    { id: z.string().min(1), dryRun: z.boolean().default(true) },
+    { id: z.string().min(1), dryRun: z.boolean().default(false) },
     async ({ id, dryRun }) => guardedWrite(config, cli, "ref_refresh", ["ref", "refresh", "--id", id], { id, dryRun }, dryRun)
   );
 
@@ -574,7 +597,7 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
     server,
     "siyuan_tag_rename",
     "Renames a tag. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
-    { old: z.string().min(1), new: z.string().min(1), dryRun: z.boolean().default(true) },
+    { old: z.string().min(1), new: z.string().min(1), dryRun: z.boolean().default(false) },
     async (args) => guardedWrite(config, cli, "tag_rename", ["tag", "rename", "--old", args.old, "--new", args.new], args, args.dryRun)
   );
 
@@ -582,7 +605,7 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
     server,
     "siyuan_tag_remove",
     "Removes a tag label. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
-    { label: z.string().min(1), dryRun: z.boolean().default(true) },
+    { label: z.string().min(1), dryRun: z.boolean().default(false) },
     async ({ label, dryRun }) => guardedWrite(config, cli, "tag_remove", ["tag", "remove", "--label", label], { label, dryRun }, dryRun)
   );
 
@@ -590,7 +613,7 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
     server,
     "siyuan_bookmark_rename",
     "Renames a bookmark label. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
-    { old: z.string().min(1), new: z.string().min(1), dryRun: z.boolean().default(true) },
+    { old: z.string().min(1), new: z.string().min(1), dryRun: z.boolean().default(false) },
     async (args) => guardedWrite(config, cli, "bookmark_rename", ["bookmark", "rename", "--old", args.old, "--new", args.new], args, args.dryRun)
   );
 
@@ -598,7 +621,7 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
     server,
     "siyuan_bookmark_remove",
     "Removes a bookmark label. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
-    { label: z.string().min(1), dryRun: z.boolean().default(true) },
+    { label: z.string().min(1), dryRun: z.boolean().default(false) },
     async ({ label, dryRun }) => guardedWrite(config, cli, "bookmark_remove", ["bookmark", "remove", "--label", label], { label, dryRun }, dryRun)
   );
 
@@ -612,7 +635,7 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
       type: z.string().min(1),
       icon: z.string().optional(),
       prev: z.string().optional(),
-      dryRun: z.boolean().default(true)
+      dryRun: z.boolean().default(false)
     },
     async ({ av, name, type, icon, prev, dryRun }) => {
       const args = ["database", "key", "add", "--av", av, "--name", name, "--type", type];
@@ -630,7 +653,7 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
     server,
     "siyuan_template_create",
     "Creates a template from markdown data. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
-    { name: z.string().min(1), data: writableMarkdownSchema(), overwrite: z.boolean().optional(), dryRun: z.boolean().default(true) },
+    { name: z.string().min(1), data: writableMarkdownSchema(), overwrite: z.boolean().optional(), dryRun: z.boolean().default(false) },
     async ({ name, data, overwrite, dryRun }) => {
       const args = ["template", "create", "--name", name, "--data", data];
       if (overwrite) {
@@ -644,7 +667,7 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
     server,
     "siyuan_template_save_as",
     "Saves a document as a template. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
-    { id: z.string().min(1), name: z.string().min(1), overwrite: z.boolean().optional(), dryRun: z.boolean().default(true) },
+    { id: z.string().min(1), name: z.string().min(1), overwrite: z.boolean().optional(), dryRun: z.boolean().default(false) },
     async ({ id, name, overwrite, dryRun }) => {
       const args = ["template", "save-as", "--id", id, "--name", name];
       if (overwrite) {
@@ -658,7 +681,7 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
     server,
     "siyuan_asset_upload",
     "Uploads asset files to a document. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
-    { id: z.string().min(1), files: z.array(z.string().min(1)).min(1).max(20), dryRun: z.boolean().default(true) },
+    { id: z.string().min(1), files: z.array(z.string().min(1)).min(1).max(20), dryRun: z.boolean().default(false) },
     async ({ id, files, dryRun }) => {
       const args = ["asset", "upload", "--id", id];
       for (const file of files) {
@@ -672,47 +695,47 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
     server,
     "siyuan_import_md",
     "Imports Markdown file or directory. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
-    { file: z.string().min(1), notebook: z.string().min(1), path: z.string().optional(), hpath: z.string().optional(), dryRun: z.boolean().default(true) },
+    { file: z.string().min(1), notebook: z.string().min(1), path: z.string().optional(), hpath: z.string().optional(), dryRun: z.boolean().default(false) },
     async (args) => guardedWrite(config, cli, "import_md", buildImportArgs("md", args), args, args.dryRun)
   );
 
   registerCliTool(
     server,
     "siyuan_import_sy",
-    "Imports .sy.zip file. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
-    { file: z.string().min(1), notebook: z.string().min(1), path: z.string().optional(), hpath: z.string().optional(), dryRun: z.boolean().default(true) },
+    "Imports .sy.zip file. Requires SIYUAN_MCP_ALLOW_DANGEROUS=true.",
+    { file: z.string().min(1), notebook: z.string().min(1), path: z.string().optional(), hpath: z.string().optional(), dryRun: z.boolean().default(false) },
     async (args) => guardedWrite(config, cli, "import_sy", buildImportArgs("sy", args), args, args.dryRun)
   );
 
   registerCliTool(
     server,
     "siyuan_import_data",
-    "Imports a full data backup. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
-    { file: z.string().min(1), dryRun: z.boolean().default(true) },
+    "Imports a full data backup. Requires SIYUAN_MCP_ALLOW_DANGEROUS=true.",
+    { file: z.string().min(1), dryRun: z.boolean().default(false) },
     async ({ file, dryRun }) => guardedWrite(config, cli, "import_data", ["import", "data", "--file", file], { file, dryRun }, dryRun)
   );
 
   registerCliTool(
     server,
     "siyuan_file_write",
-    "Writes a workspace file from a local source file. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
-    { path: z.string().min(1), file: z.string().min(1), dryRun: z.boolean().default(true) },
+    "Writes a workspace file from a local source file. Requires SIYUAN_MCP_ALLOW_DANGEROUS=true.",
+    { path: z.string().min(1), file: z.string().min(1), dryRun: z.boolean().default(false) },
     async ({ path, file, dryRun }) => guardedWrite(config, cli, "file_write", ["file", "write", path, "--file", file], { path, file, dryRun }, dryRun)
   );
 
   registerCliTool(
     server,
     "siyuan_file_rename",
-    "Renames or moves a workspace file. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
-    { old: z.string().min(1), new: z.string().min(1), dryRun: z.boolean().default(true) },
+    "Renames or moves a workspace file. Requires SIYUAN_MCP_ALLOW_DANGEROUS=true.",
+    { old: z.string().min(1), new: z.string().min(1), dryRun: z.boolean().default(false) },
     async (args) => guardedWrite(config, cli, "file_rename", ["file", "rename", args.old, args.new], args, args.dryRun)
   );
 
   registerCliTool(
     server,
     "siyuan_file_copy",
-    "Copies a workspace file or directory. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
-    { src: z.string().min(1), dst: z.string().min(1), dryRun: z.boolean().default(true) },
+    "Copies a workspace file or directory. Requires SIYUAN_MCP_ALLOW_DANGEROUS=true.",
+    { src: z.string().min(1), dst: z.string().min(1), dryRun: z.boolean().default(false) },
     async (args) => guardedWrite(config, cli, "file_copy", ["file", "copy", args.src, args.dst], args, args.dryRun)
   );
 
@@ -720,15 +743,15 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
     server,
     "siyuan_sync_push",
     "Pushes sync data. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
-    { dryRun: z.boolean().default(true) },
+    { dryRun: z.boolean().default(false) },
     async ({ dryRun }) => guardedWrite(config, cli, "sync_push", ["sync", "push"], { dryRun }, dryRun)
   );
 
   registerCliTool(
     server,
     "siyuan_sync_pull",
-    "Pulls sync data. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
-    { dryRun: z.boolean().default(true) },
+    "Pulls sync data. Requires SIYUAN_MCP_ALLOW_DANGEROUS=true.",
+    { dryRun: z.boolean().default(false) },
     async ({ dryRun }) => guardedWrite(config, cli, "sync_pull", ["sync", "pull"], { dryRun }, dryRun)
   );
 
@@ -736,35 +759,49 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
     server,
     "siyuan_export_docx",
     "Exports a document as docx to an output path. Requires SIYUAN_MCP_ALLOW_WRITE=true because it writes a file.",
-    { id: z.string().min(1), output: z.string().min(1), dryRun: z.boolean().default(true) },
+    { id: z.string().min(1), output: z.string().min(1), dryRun: z.boolean().default(false) },
     async ({ id, output, dryRun }) => guardedWrite(config, cli, "export_docx", ["export", "docx", "--id", id, "--output", output], { id, output, dryRun }, dryRun)
   );
 }
 
-export async function replaceDocumentBodyDirectly(
+export async function replaceDocumentBodyDirectly(config: ServerConfig, cli: SiyuanCli, id: string, markdown: string) {
+  const command = "document_replace_body";
+  const permission = requireDangerous(config, command);
+  if (permission) return permission;
+  const targets = await readTargets(cli, [id], command);
+  if (!(targets instanceof Map)) return targets;
+  const invalid = requireTarget(targets.get(id)!, "document", command);
+  if (invalid) return invalid;
+  const issues = validateWritableMarkdown(markdown);
+  if (issues.length) return safetyError(command, "INVALID_MARKDOWN", issues.join(" "));
+  const backup = await backupDocument(config, cli, id, command);
+  if (!backup.ok) return backup;
+  const result = await replaceDocumentBodySteps(config, cli, id, markdown);
+  const verified = await verifyMarkdown(cli, id, markdown, result);
+  return { ...verified, recovery: backup.data, warnings: [...backup.warnings, ...verified.warnings] };
+}
+
+async function replaceDocumentBodySteps(
   config: ServerConfig,
   cli: SiyuanCli,
   id: string,
   markdown: string
 ) {
-  const permission = requireWrite(config, "document_replace_body");
-  if (permission) {
-    return permission;
-  }
-
   const children = await cli.run("block_children", ["block", "children", "--id", id]);
   if (!children.ok) {
     return {
       ...children,
+      execution: "not-started",
       command: "document_replace_body",
       warnings: ["Could not enumerate the document's initial top-level blocks. No changes were applied.", ...children.warnings]
     };
   }
 
   const childIds = directChildIds(children.data);
-  if (!childIds) {
+  if (!childIds || childIds.includes(id) || new Set(childIds).size !== childIds.length) {
     return {
       ok: false,
+      execution: "not-started",
       command: "document_replace_body",
       warnings: ["The block children response had an unexpected shape. No changes were applied."],
       data: { documentId: id, deletedCount: 0, appended: false }
@@ -786,6 +823,9 @@ export async function replaceDocumentBodyDirectly(
     if (!deleted.ok) {
       return {
         ok: false,
+        code: "PARTIAL_FAILURE",
+        execution: deleted.execution === "unknown" ? "unknown" : deletedIds.length ? "partial" : "not-started",
+        retryable: false,
         command: "document_replace_body",
         warnings: [
           `Failed after deleting ${deletedIds.length} of ${childIds.length} initial top-level blocks. The operation is non-transactional.`,
@@ -798,7 +838,7 @@ export async function replaceDocumentBodyDirectly(
           deletedIds,
           failedId: childId,
           appended: false,
-          requiresRefresh: deletedIds.length > 0
+          requiresRefresh: deletedIds.length > 0 || deleted.execution === "unknown"
         },
         raw: deleted.raw
       };
@@ -851,6 +891,9 @@ export async function replaceDocumentBodyDirectly(
   if (!appended.ok) {
     return {
       ok: false,
+      code: "PARTIAL_FAILURE",
+      execution: appended.execution === "unknown" ? "unknown" : "partial",
+      retryable: false,
       command: "document_replace_body",
       warnings: [
         `The ${deletedIds.length} initial top-level blocks were deleted, but appending the replacement body failed. The operation is non-transactional.`,
@@ -923,7 +966,7 @@ function directChildIds(data: unknown): string[] | undefined {
     return undefined;
   });
 
-  return ids.every((item): item is string => typeof item === "string" && item.length > 0) ? ids : undefined;
+  return ids.every((item): item is string => typeof item === "string" && BLOCK_ID.test(item)) ? ids : undefined;
 }
 
 function directChildItems(data: unknown): unknown[] | undefined {
@@ -956,99 +999,77 @@ function singleEmptyParagraphId(data: unknown): string | undefined {
   }
 
   const record = item as Record<string, unknown>;
-  const content = typeof record.content === "string" ? record.content : "";
-  const markdown = typeof record.markdown === "string" ? record.markdown : "";
-  return typeof record.id === "string" && record.type === "p" && content.length === 0 && markdown.length === 0
+  return typeof record.id === "string" && BLOCK_ID.test(record.id) && record.type === "p" && record.content === "" && record.markdown === ""
     ? record.id
     : undefined;
 }
 
-async function patchBlocksDirectly(
-  config: ServerConfig,
-  cli: SiyuanCli,
-  operations: PatchOperation[],
-  dryRun: boolean
-) {
-  const permission = requireWrite(config, "block_patch");
-  if (permission) {
-    return permission;
-  }
-
-  const prepared = operations.map((operation, index) => ({
-    index,
-    operation,
-    built: buildPatchOperationArgs(operation)
-  }));
+async function patchBlocksDirectly(config: ServerConfig, cli: SiyuanCli, documentId: string, operations: PatchOperation[], dryRun: boolean) {
+  const command = "block_patch";
+  const permission = requireWrite(config, command);
+  if (permission) return permission;
+  const prepared = operations.map((operation, index) => ({ index, operation, built: buildPatchOperationArgs(operation) }));
   const invalid = prepared.find((item) => "error" in item.built);
-  if (invalid && "error" in invalid.built) {
-    return {
-      ...invalid.built.error,
-      command: "block_patch",
-      warnings: [
-        `Patch operation ${invalid.index} (${invalid.operation.op}) is invalid. No operations were applied.`,
-        ...invalid.built.error.warnings
-      ],
-      data: {
-        failedIndex: invalid.index,
-        operation: invalid.operation,
-        applied: []
+  if (invalid && "error" in invalid.built) return { ...invalid.built.error, execution: "not-started", data: { failedIndex: invalid.index, applied: [] } };
+  const targetIds = operations.flatMap((op) => "id" in op ? [op.id] : [op.parent, ...(op.op === "insert" && op.previous ? [op.previous] : [])]);
+  const targets = await readTargets(cli, [documentId, ...targetIds], command, documentId);
+  if (!(targets instanceof Map)) return targets;
+  const invalidDocument = requireTarget(targets.get(documentId)!, "document", command);
+  if (invalidDocument) return invalidDocument;
+  const destructive = operations.filter((op) => op.op === "update" || op.op === "delete");
+  for (const op of operations) {
+    if ("id" in op) {
+      const invalidTarget = requireTarget(targets.get(op.id)!, "content", command);
+      if (invalidTarget) return invalidTarget;
+    } else {
+      const invalidTarget = checkInsertion(targets, op.parent, op.op === "insert" ? op.previous : undefined, command);
+      if (invalidTarget) return invalidTarget;
+    }
+  }
+  // Reject dependencies on any destructive target, in either order, before the first write.
+  for (const op of destructive) {
+    const duplicate = destructive.filter((item) => item.id === op.id).length > 1;
+    if (duplicate) return safetyError(command, "CONFLICTING_OPERATIONS", "A block cannot be updated/deleted twice in one batch.");
+    for (const other of operations) {
+      if (other === op) continue;
+      const refs = "id" in other ? [other.id] : [other.parent, ...(other.op === "insert" && other.previous ? [other.previous] : [])];
+      for (const ref of refs) {
+        let current = ref;
+        const visited = new Set<string>();
+        while (current && current !== documentId) {
+          if (current === op.id || visited.has(current)) return safetyError(command, "CONFLICTING_OPERATIONS", "A batch cannot depend on a block/subtree that it updates or deletes. Split the dependent work and use fresh target IDs.");
+          visited.add(current);
+          const ancestor = targets.get(current);
+          if (!ancestor) return safetyError(command, "TARGET_LOOKUP_FAILED", "Could not verify the target ancestry.");
+          current = ancestor.parent_id;
+        }
       }
-    };
+    }
+    // Heading updates can affect section ownership beyond parent_id relationships.
+    if (targets.get(op.id)!.type === "h" && operations.length > 1) return safetyError(command, "CONFLICTING_OPERATIONS", "Edit or delete a heading in a separate call before composing changes to its section.");
   }
-
-  const results = [];
-  for (const item of prepared) {
-    const { index, operation } = item;
-    const built = item.built;
-    if ("error" in built) {
-      throw new Error("Unexpected invalid patch operation after preflight.");
-    }
-
-    const result = await runAuditedWrite(
-      config,
-      cli,
-      built.command,
-      withDryRun(built.args, dryRun),
-      { operation, index, dryRun, reason: "block_patch" },
-      dryRun
-    );
-
-    results.push({
-      index,
-      op: operation.op,
-      command: built.command,
-      ok: result.ok,
-      data: result.data,
-      warnings: result.warnings,
-      raw: result.raw
-    });
-
-    if (!result.ok) {
-      return {
-        ok: false,
-        command: "block_patch",
-        warnings: [`Patch operation ${index} (${operation.op}) failed.`, ...result.warnings],
-        data: {
-          applied: results.slice(0, -1),
-          failed: results[results.length - 1]
-        },
-        raw: result.raw
-      };
-    }
+  const backup = destructive.length ? await backupDocument(config, cli, documentId, command) : undefined;
+  if (backup && !backup.ok) return backup;
+  const applied: Record<string, unknown>[] = [];
+  const warnings = [...(backup?.warnings ?? [])];
+  for (const { index, operation, built } of prepared) {
+    if ("error" in built) throw new Error("Invalid prepared operation");
+    const result = await runAuditedWrite(config, cli, built.command, withDryRun(built.args, dryRun), { operation, index, documentId, dryRun }, dryRun);
+    warnings.push(...result.warnings);
+    if (!result.ok) return { ok: false, command, code: "PARTIAL_FAILURE", execution: result.execution === "unknown" ? "unknown" : applied.length ? "partial" : "not-started", retryable: false, warnings, recovery: backup?.data, data: { applied, failed: { index, op: operation.op, ...result }, requiresRefresh: true } };
+    applied.push({ index, op: operation.op, id: "id" in operation ? operation.id : undefined, result: result.data });
   }
-
-  return {
-    ok: true,
-    command: "block_patch",
-    warnings: operations.some((operation) => operation.op === "update" || operation.op === "delete")
-      ? ["The document structure changed and updated blocks may have new IDs. Re-read the document before further edits."]
-      : [],
-    data: {
-      applied: results,
-      appliedCount: results.length,
-      requiresRefresh: operations.some((operation) => operation.op === "update" || operation.op === "delete")
-    }
-  };
+  let verified = true;
+  if (destructive.length) {
+    const remaining = await readTargets(cli, destructive.map((op) => op.id), command, undefined, true);
+    verified = remaining instanceof Map && destructive.every((op) => op.op === "delete"
+      ? !remaining.has(op.id)
+      : remaining.has(op.id) && normalizeMarkdown(remaining.get(op.id)!.markdown) === normalizeMarkdown(op.markdown));
+  }
+  return { ok: verified, command, execution: "applied", verification: destructive.length ? verified ? "passed" : "unknown" : "not-required",
+    ...(verified ? {} : { code: "VERIFICATION_FAILED", retryable: false }), recovery: backup?.data,
+    warnings: [...warnings, ...(verified ? [] : ["The batch ran, but final targets could not be verified. Inspect the affected scope; do not repeat the batch."])],
+    data: { documentId, applied, appliedCount: applied.length, requiresRefresh: !verified } };
 }
 
 function buildPatchOperationArgs(operation: PatchOperation):
@@ -1061,7 +1082,7 @@ function buildPatchOperationArgs(operation: PatchOperation):
     };
   }
 
-  const content = blockContentArgs(operation.markdown, "file" in operation ? operation.file : undefined);
+  const content = blockContentArgs(operation.markdown);
   if ("error" in content) {
     return content;
   }
@@ -1120,7 +1141,8 @@ async function guardedWrite(
   input: Record<string, unknown>,
   dryRun: boolean
 ) {
-  const permission = requireWrite(config, command);
+  const permission = ["file_write", "file_rename", "file_copy", "import_sy", "import_data", "sync_pull"].includes(command)
+    ? requireDangerous(config, command) : requireWrite(config, command);
   if (permission) {
     return permission;
   }
@@ -1134,25 +1156,28 @@ async function writeBlockChild(
   command: string,
   subcommand: "append" | "prepend",
   parent: string,
-  markdown: string | undefined,
-  file: string | undefined,
+  markdown: string,
   dryRun: boolean
 ) {
   const permission = requireWrite(config, command);
   if (permission) {
     return permission;
   }
-  const content = blockContentArgs(markdown, file);
+  const content = blockContentArgs(markdown);
   if ("error" in content) {
     return content.error;
   }
 
+  const targets = await readTargets(cli, [parent], command);
+  if (!(targets instanceof Map)) return targets;
+  const invalid = checkInsertion(targets, parent, undefined, command);
+  if (invalid) return invalid;
   return runAuditedWrite(
     config,
     cli,
     command,
     withDryRun(["block", subcommand, "--parent", parent, ...content.args], dryRun),
-    { parent, markdown, file, dryRun },
+    { parent, markdown, dryRun },
     dryRun
   );
 }
@@ -1178,39 +1203,27 @@ async function updateBlockDirectly(
     };
   }
 
-  const result = await runAuditedWrite(
-    config,
-    cli,
-    "block_update",
+  const targets = await readTargets(cli, [id], "block_update");
+  if (!(targets instanceof Map)) return targets;
+  const target = targets.get(id)!;
+  const invalid = requireTarget(target, "content", "block_update");
+  if (invalid) return invalid;
+  const issues = validateWritableMarkdown(markdown);
+  if (issues.length) return safetyError("block_update", "INVALID_MARKDOWN", issues.join(" "));
+  const backup = await backupDocument(config, cli, target.root_id, "block_update");
+  if (!backup.ok) return backup;
+  const result = await runAuditedWrite(config, cli, "block_update",
     withDryRun(["block", "update", "--id", id, "--data", markdown], dryRun),
-    { id, dryRun, reason: "block_update_direct" },
-    dryRun
-  );
-  return result.ok
-    ? {
-        ...result,
-        warnings: [
-          "The block was replaced and may have a new ID. Re-read the document before further edits.",
-          ...result.warnings
-        ]
-      }
-    : result;
+    { id, markdown, dryRun, reason: "block_update" }, dryRun);
+  return { ...await verifyMarkdown(cli, id, markdown, result), recovery: backup.data };
 }
 
-function blockContentArgs(markdown: string | undefined, file: string | undefined):
+function blockContentArgs(markdown: string):
   | { args: string[] }
   | { error: { ok: false; warnings: string[]; command: string } } {
-  if ((markdown && file) || (!markdown && !file)) {
-    return {
-      error: {
-        ok: false,
-        warnings: ["Provide exactly one of markdown or file."],
-        command: "block_content"
-      }
-    };
-  }
-
-  return markdown ? { args: ["--data", markdown] } : { args: ["--file", file as string] };
+  const issues = validateWritableMarkdown(markdown);
+  if (!markdown || issues.length) return { error: { ok: false, command: "block_content", warnings: issues.length ? issues : ["Markdown must not be empty."] } };
+  return { args: ["--data", markdown] };
 }
 
 function assetList(data: unknown, key: string): string[] {

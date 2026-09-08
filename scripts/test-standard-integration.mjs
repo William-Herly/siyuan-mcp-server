@@ -5,6 +5,9 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
+assert.ok(process.env.SIYUAN_TEST_WORKSPACE, "Set SIYUAN_TEST_WORKSPACE to an isolated test workspace; no default workspace is allowed.");
+assert.ok(process.env.SIYUAN_TEST_NOTEBOOK_ID, "Set SIYUAN_TEST_NOTEBOOK_ID explicitly; no automatic notebook selection is allowed.");
+const testDangerous = process.env.SIYUAN_TEST_DANGEROUS === "true";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const packageJson = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
 const packageVersion = packageJson.version;
@@ -34,6 +37,7 @@ const expectedTools = new Set([
   "siyuan_block_breadcrumb",
   "siyuan_get_backlinks",
   "siyuan_create_document",
+  "siyuan_rename_document",
   "siyuan_append_block",
   "siyuan_insert_block",
   "siyuan_update_block",
@@ -50,7 +54,7 @@ const expectedTools = new Set([
 const env = Object.fromEntries(Object.entries(process.env).filter((entry) => typeof entry[1] === "string"));
 env.SIYUAN_MCP_PROFILE = "maintain";
 env.SIYUAN_MCP_ALLOW_WRITE = "true";
-env.SIYUAN_MCP_ALLOW_DANGEROUS = "false";
+env.SIYUAN_MCP_ALLOW_DANGEROUS = String(testDangerous);
 if (process.env.SIYUAN_TEST_WORKSPACE) {
   env.SIYUAN_MCP_WORKSPACE = process.env.SIYUAN_TEST_WORKSPACE;
 }
@@ -67,7 +71,7 @@ transport.stderr?.on("data", (chunk) => report.stderr.push(String(chunk).trim())
 const client = new Client({ name: "siyuan-standard-integration-test", version: "1.0.0" });
 
 function normalizedResult(result) {
-  assert.equal(result.isError, undefined, "MCP call unexpectedly returned isError");
+  assert.equal(result.isError, result.structuredContent?.ok === false ? true : undefined, "MCP error flag disagrees with execution result");
   assert.ok(result.structuredContent && typeof result.structuredContent === "object", "Missing structuredContent");
   const textBlock = result.content?.find((item) => item.type === "text");
   assert.ok(textBlock, "Missing text compatibility result");
@@ -75,12 +79,12 @@ function normalizedResult(result) {
   return result.structuredContent;
 }
 
-async function call(name, args = {}) {
+async function call(name, args = {}, expectFailure = false) {
   const started = performance.now();
   const result = normalizedResult(await client.callTool({ name, arguments: args }));
   const elapsedMs = Math.round(performance.now() - started);
-  report.tools.push({ name, ok: result.ok === true, elapsedMs, warnings: result.warnings ?? [] });
-  assert.equal(result.ok, true, `${name} failed: ${JSON.stringify(result.warnings ?? result.raw ?? result)}`);
+  report.tools.push({ name, ok: result.ok === !expectFailure, elapsedMs, warnings: result.warnings ?? [] });
+  assert.equal(result.ok, !expectFailure, `${name} failed: ${JSON.stringify(result.warnings ?? result.raw ?? result)}`);
   return result;
 }
 
@@ -142,14 +146,12 @@ try {
 
   const health = await call("siyuan_health");
   assert.equal(health.data.toolProfile, "standard");
-  assert.equal(health.data.permissionMode, "safe-write");
+  assert.equal(health.data.permissionMode, testDangerous ? "dangerous" : "safe-write");
 
   const notebooks = await call("siyuan_list_notebooks");
   const notebookList = Array.isArray(notebooks.data) ? notebooks.data : notebooks.data?.notebooks;
   assert.ok(Array.isArray(notebookList) && notebookList.length > 0, "No open notebook available for integration testing");
-  const notebook = process.env.SIYUAN_TEST_NOTEBOOK_ID
-    ? notebookList.find((item) => item.id === process.env.SIYUAN_TEST_NOTEBOOK_ID)
-    : notebookList.find((item) => item.name === "项目记录") ?? notebookList[0];
+  const notebook = notebookList.find((item) => item.id === process.env.SIYUAN_TEST_NOTEBOOK_ID);
   assert.ok(notebook, "Requested test notebook was not found");
   report.notebook = { id: notebook.id, name: notebook.name };
 
@@ -176,6 +178,17 @@ try {
   await call("siyuan_document_info", { id: documentId });
   const initialDocument = await call("siyuan_get_document_kramdown", { id: documentId, mode: "md" });
   assert.match(initialDocument.data.markdown, /中文与 emoji/);
+  const beforeRename = await call("siyuan_get_document_kramdown", { id: documentId });
+  const renamed = await call("siyuan_rename_document", { id: documentId, title: title + " renamed" });
+  assert.equal(renamed.verification, "passed");
+  const afterRename = await call("siyuan_get_document_kramdown", { id: documentId });
+  // Root IAL carries the title; preserve the full body including child IDs.
+  const body = (value) => value.split("\n").filter((line) => !line.startsWith('{: id="' + documentId + '"')).join("\n").trim();
+  assert.equal(body(afterRename.data.markdown), body(beforeRename.data.markdown));
+  const rootGuard = await call("siyuan_update_block", { id: documentId, markdown: "must never replace body" }, true);
+  assert.equal(rootGuard.code, "TARGET_TYPE_MISMATCH");
+  const patchRootGuard = await call("siyuan_patch_blocks", { documentId, operations: [{ op: "delete", id: documentId }] }, true);
+  assert.equal(patchRootGuard.code, "TARGET_TYPE_MISMATCH");
   await call("siyuan_get_outline", { id: documentId });
   await call("siyuan_get_block_kramdown", { id: documentId, mode: "md" });
   let children = await call("siyuan_get_block_children", { id: documentId });
@@ -210,9 +223,10 @@ try {
   childIds = collectIds(children.data);
   const disposableId = newlyAdded(beforeDisposable, childIds)[0];
   assert.ok(disposableId, "Could not identify disposable patch target");
-  const updateTarget = childIds.find((id) => id !== disposableId);
+  const updateTarget = children.data.find((item) => item.type === "p" && item.id !== disposableId)?.id;
   assert.ok(updateTarget, "Could not select patch update target");
   const patched = await call("siyuan_patch_blocks", {
+    documentId,
     operations: [
       { op: "delete", id: disposableId },
       { op: "append", parent: documentId, markdown: "Patch appended paragraph." },
@@ -221,6 +235,8 @@ try {
     ]
   });
   assert.equal(patched.data.appliedCount, 4);
+  assert.equal(patched.verification, "passed");
+  assert.equal(patched.data.requiresRefresh, false);
 
   const replacementMarkdown = [
     "## 最终测试结果",
@@ -231,11 +247,17 @@ try {
     "- whole-body replacement passed",
     "- 中文与 emoji 🙂 preserved"
   ].join("\n");
-  const replaced = await call("siyuan_replace_document_body", { id: documentId, markdown: replacementMarkdown });
-  assert.equal(replaced.data.appended, true);
-  const finalDocument = await call("siyuan_get_document_kramdown", { id: documentId, mode: "md" });
-  assert.match(finalDocument.data.markdown, new RegExp(runId));
-  assert.match(finalDocument.data.markdown, /中文与 emoji/);
+  const replaced = await call("siyuan_replace_document_body", { id: documentId, markdown: replacementMarkdown }, !testDangerous);
+  if (testDangerous) {
+    assert.equal(replaced.data.appended, true);
+    assert.equal(replaced.verification, "passed");
+    assert.ok(replaced.recovery?.archive);
+    const finalDocument = await call("siyuan_get_document_kramdown", { id: documentId, mode: "md" });
+    assert.match(finalDocument.data.markdown, new RegExp(runId));
+    assert.match(finalDocument.data.markdown, /中文与 emoji/);
+  } else {
+    assert.equal(replaced.code, "PERMISSION_DENIED");
+  }
 
   const dailyMarkdown = `- ${dailyMarker}: standard tools passed; test document ((` + documentId + " 'integration test')).";
   await call("siyuan_append_daily_note", { notebook: notebook.id, markdown: dailyMarkdown });

@@ -59,10 +59,12 @@ MCP Server 使用官方 SDK 提供的 `McpServer` 注册工具，通过 `StdioSe
 - 不直接调用本地思源 HTTP API。
 - 不读取或返回 API Token、同步密钥和完整配置。
 - 不在 npm 包中附带 `SiYuan-Kernel`。
-- 普通写入不自动增加整篇回读、快照或回滚。
+- 按风险执行目标检查、文档备份和定向验证；创建、追加、改名不强制回读全文。
 - 多步写入明确报告非事务性行为和部分执行进度。
 
 更多设计说明见[架构文档](docs/architecture.md)。
+
+当前保护、恢复档案、效率约束和宿主隔离责任见[写入保护与 Agent 能力边界](docs/safety.md)。
 
 ## 使用要求
 
@@ -86,7 +88,7 @@ siyuan --help
 从项目的 [Releases](https://github.com/William-Herly/siyuan-mcp-server/releases) 页面下载 `.tgz`：
 
 ```bash
-npm install -g ./siyuan-mcp-server-1.0.1.tgz
+npm install -g ./siyuan-mcp-server-2.0.0.tgz
 ```
 
 安装后可执行命令为：
@@ -133,7 +135,7 @@ npm install -g .
 检查思源 MCP 状态，列出笔记本，并搜索一个已有笔记。
 ```
 
-预期结果是 Agent 优先发现 `siyuan_*` 工具，并通过本项目访问思源工作空间。
+预期结果是 Agent 发现 `siyuan_*` 工具，并通过本项目访问思源工作空间。
 
 如果直接从源码运行，将命令改为：
 
@@ -184,37 +186,51 @@ Windows JSON 路径建议使用正斜杠。
 | 读取整篇文档 | `siyuan_get_document_kramdown` |
 | 读取相关块 | `siyuan_get_block_kramdown`、`siyuan_batch_get_kramdown` |
 | 创建文档 | `siyuan_create_document` |
+| 修改文档标题 | `siyuan_rename_document` |
 | 追加或插入内容 | `siyuan_append_block`、`siyuan_insert_block` |
 | 更新一个块 | `siyuan_update_block` |
 | 应用多项块修改 | `siyuan_patch_blocks` |
-| 替换整篇正文 | `siyuan_replace_document_body` |
+| 替换整篇正文（危险权限） | `siyuan_replace_document_body` |
 | 追加今日日记 | `siyuan_append_daily_note` |
 
 完整工具列表和参数语义见[工具参考](docs/tool-coverage.md)。
 
 ## 写入语义
 
-普通写入保持轻量：
+保护按操作风险执行：
 
-- 创建、追加和插入成功后直接返回结果。
-- 单块更新可能生成新的块 ID，工具会提示 Agent 在继续依赖旧 ID 前重新读取。
-- 批量补丁包含更新或删除时返回 `requiresRefresh: true`。
-- 整篇正文替换保留文档 ID，但属于非事务性的多步操作。
-- 整篇替换会返回删除数量、追加状态、提交哈希和占位块清理结果。
-- 自动化测试可以显式回读关键写入，但日常工具不会强制执行。
+- 标准配置提供专用重命名；普通块更新、删除拒绝文档根。
+- 创建、追加和插入不强制全文回读；重命名仅确认标题元数据。
+- 更新、破坏性 patch 和全文替换在首次内容修改前创建一次文档 .sy.zip 恢复档案。
+- patch 必须指定 documentId，预先拒绝跨文档和相互依赖的破坏性操作。
+- 更新只验证目标块，patch 合并验证，全文替换内部验证一次；信息足够时 requiresRefresh=false，不要求 Agent 重读。
+- 全文替换需要危险权限，仍是非事务性操作；失败返回进度和恢复档案，不自动回滚。
+- 日志失败与写入失败分别报告，避免盲目重试导致重复内容。
 
 思源行内公式使用 `$...$`。fenced code block、缩进代码块和行内代码中的 `$` 按字面量处理，不参与公式校验。
 
 ## 安全与数据边界
 
 - 默认配置为只读。
-- 写入和危险操作分别授权。
+- 写入和危险操作分别授权；全文替换和部分 full 存储管理工具要求危险权限。
+- 能力缺失或被拒绝时，Agent 应停止相关动作，不能自行改用 HTTP、CLI 或文件操作。外部路径的强制隔离由宿主负责。
+- 恢复档案包含真实笔记内容，默认位于日志目录的 recovery 子目录；应限制访问并管理保留时间。
 - CLI 使用参数数组调用，不通过 shell 拼接用户输入。
 - Markdown 正文在审计日志中替换为长度、字节数和 SHA-256。
 - 错误信息不应包含认证头和思源敏感配置。
 - `notes/`、日志、测试报告、构建结果和安装包不会提交到 Git。
 
 提交 Issue 时，请勿附带真实笔记正文、工作空间数据、访问凭据或未经脱敏的日志。
+
+## 2.0 迁移
+
+- standard 新增重命名；patch 新增必填 documentId。
+- 块追加、插入、prepend 和 patch 仅接受 markdown，不再接受 file。
+- 全文替换、full 文件写入/移动/复制、SY/整库导入、同步拉取要求危险权限。不要为日常任务盲目提高权限。
+- 写入失败返回 MCP isError；成功结果不再一律要求刷新。MCP 不公开 dryRun。
+- 原有“无备份、无验证”行为已替换；自动回滚、强制版本控制和宿主隔离未实现。
+
+升级后重启 MCP 客户端刷新工具列表。
 
 ## 开发与测试
 
@@ -233,7 +249,7 @@ npm run dev
 在独立测试笔记本中运行 `standard` 集成测试：
 
 ```powershell
-$env:SIYUAN_TEST_WORKSPACE = "E:\SiYuan Data"
+$env:SIYUAN_TEST_WORKSPACE = "C:/SiYuan-MCP-Disposable-Test"
 $env:SIYUAN_TEST_NOTEBOOK_ID = "notebook-id"
 npm run test:standard
 ```
@@ -255,6 +271,7 @@ dist/       TypeScript 构建输出，不提交到 Git
 
 - [工具参考](docs/tool-coverage.md)
 - [架构设计](docs/architecture.md)
+- [写入保护与能力边界](docs/safety.md)
 - [测试指南](docs/testing.md)
 - [问题反馈](https://github.com/William-Herly/siyuan-mcp-server/issues)
 

@@ -68,7 +68,7 @@ export function registerDatabaseTools(server: McpServer, config: ServerConfig, c
       previous: z.string().min(1).optional(),
       detached: z.boolean().optional(),
       ignoreDefaultFill: z.boolean().optional(),
-      dryRun: z.boolean().default(true)
+      dryRun: z.boolean().default(false)
     },
     async (args) => {
       const permission = requireWrite(config, "database_item_add");
@@ -101,7 +101,7 @@ export function registerDatabaseTools(server: McpServer, config: ServerConfig, c
       key: z.string().min(1),
       item: z.string().min(1),
       value: z.record(z.string(), z.unknown()),
-      dryRun: z.boolean().default(true)
+      dryRun: z.boolean().default(false)
     },
     async ({ av, key, item, value, dryRun }) => {
       const permission = requireWrite(config, "database_item_update");

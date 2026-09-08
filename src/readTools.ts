@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod/v4";
 import type { ServerConfig } from "./config.js";
+import { writeCapabilities } from "./toolProfiles.js";
 import { publicConfigSummary, validateConfig } from "./config.js";
 import { SiyuanCli } from "./cli.js";
 import { ensureLimit, validateSelectSql } from "./sql.js";
@@ -33,7 +34,7 @@ export function registerReadTools(server: McpServer, config: ServerConfig, cli: 
     async () => {
       const structuredContent = {
         ok: true,
-        data: publicConfigSummary(config),
+        data: { ...publicConfigSummary(config), writeCapabilities: writeCapabilities(config), accessPolicy: "mcp-only; missing capabilities are not permission to use HTTP, CLI or files", externalIsolation: "host-managed; not enforced by this server" },
         warnings: await validateConfig(config),
         command: "health"
       };

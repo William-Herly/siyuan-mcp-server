@@ -32,6 +32,7 @@ export function registerCliTool<TShape extends ToolShape>(
 
 export function textResult(structuredContent: Record<string, unknown>): CallToolResult {
   return {
+    ...(structuredContent.ok === false ? { isError: true } : {}),
     content: [
       {
         type: "text" as const,
@@ -64,6 +65,9 @@ export function requireWrite(config: ServerConfig, command: string): NormalizedR
 
   return {
     ok: false,
+    code: "PERMISSION_DENIED",
+    execution: "not-started",
+    retryable: false,
     warnings: ["Write tools require SIYUAN_MCP_ALLOW_WRITE=true."],
     command,
     data: {
@@ -83,6 +87,9 @@ export function requireDangerous(config: ServerConfig, command: string): Normali
 
   return {
     ok: false,
+    code: "PERMISSION_DENIED",
+    execution: "not-started",
+    retryable: false,
     warnings: ["Dangerous tools require SIYUAN_MCP_ALLOW_DANGEROUS=true."],
     command,
     data: {
@@ -168,9 +175,20 @@ export async function runAuditedWrite(
   dryRun: boolean | undefined
 ): Promise<NormalizedResponse> {
   const effectiveDryRun = dryRun === true;
+  try {
+    await auditWrite(config, command, { ...input, auditPhase: "intent" }, effectiveDryRun, { ok: true, command, warnings: [] });
+  } catch {
+    return { ok: false, command, code: "AUDIT_UNAVAILABLE", execution: "not-started", retryable: false, warnings: ["Could not record write intent. No command was executed."] };
+  }
   const result = await cli.run(command, args, effectiveDryRun ? { output: "text" } : {});
-  await auditWrite(config, command, input, effectiveDryRun, result);
-  return result;
+  const outcome = { ...result, execution: effectiveDryRun ? "not-started" : result.ok ? "applied" : "unknown", verification: "not-required", retryable: false,
+    ...(!result.ok ? { code: "WRITE_STATE_UNKNOWN" } : {}) };
+  try {
+    await auditWrite(config, command, { ...input, auditPhase: "result" }, effectiveDryRun, outcome);
+    return outcome;
+  } catch {
+    return { ...outcome, audit: "failed", warnings: [...result.warnings, "The command already ran, but its audit result could not be saved. Do not repeat the write solely because logging failed."] };
+  }
 }
 
 /**

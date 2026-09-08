@@ -1,152 +1,52 @@
 # 测试指南
 
-项目包含单元测试和真实思源工作空间集成测试。涉及写入的测试只能在独立测试笔记本或一次性工作空间中运行。
+写入测试只在独立工作空间运行。脚本要求显式指定工作空间和笔记本，不自动选择默认空间或第一个笔记本。
 
-## 单元测试
+## 单元测试与构建
 
 ```bash
-npm install
-npm run build
 npm test
+npm run build
 ```
 
-单元测试覆盖：
+覆盖工具发现、schema、权限、根块保护、未知类型、范围与依赖冲突、Markdown 校验、备份失败、部分执行、超时、验证失败、日志失败和输出。模拟执行器不连接生产思源。
 
-- 工具配置过滤
-- 参数 schema
-- CLI 参数构造
-- 权限拒绝
-- Markdown 和公式校验
-- 批量修改的预校验与部分失败结果
-- 整篇正文替换的步骤和返回结构
-- 输出规范化和审计脱敏
+性能断言：改名不读正文或备份；追加仅目标查询和写入；单块更新只验证目标一次；批次共用一个档案和最终查询；失败不自动重试。
 
-## `standard` 集成测试
+## 真实 standard 集成测试
 
-设置测试工作空间和笔记本 ID：
+准备已初始化的独立测试空间及其中的测试笔记本：
 
 ```powershell
-$env:SIYUAN_TEST_WORKSPACE = "E:\SiYuan Data"
-$env:SIYUAN_TEST_NOTEBOOK_ID = "notebook-id"
+$env:SIYUAN_TEST_WORKSPACE = "C:/SiYuan-MCP-Disposable-Test"
+$env:SIYUAN_TEST_NOTEBOOK_ID = "<test-notebook-id>"
+npm run build
 npm run test:standard
 ```
 
-脚本会：
+脚本通过 stdio 连接构建后的 server，使用 maintain（standard 别名），验证 24 个工具。创建唯一测试文档，测试改名后正文/子块 ID 不变、根块更新和 patch 删除被拒绝、普通修改有备份与验证结果。默认确认全文替换被危险权限拒绝。
 
-1. 通过 stdio 启动构建后的 MCP Server。
-2. 使用 `SIYUAN_MCP_PROFILE=maintain`，验证它等同于 `standard`。
-3. 启用普通写入权限。
-4. 检查准确的工具列表。
-5. 调用所有 `standard` 已暴露工具。
-6. 创建带唯一名称的测试文档。
-7. 向今日日记追加一条唯一标记。
-8. 在关键结构写入后显式回读结果。
-9. 将 JSON 报告保存到 `.siyuan-mcp/test-reports/`。
+仅在同一独立空间测试全文替换：
 
-`standard` 不暴露删除文档工具，因此测试不会自动删除创建的文档和日记标记。报告会记录相关 ID，便于人工检查或在明确启用危险权限后清理。
-
-## 手动只读冒烟测试
-
-重启 MCP 客户端，使其加载最新工具列表，然后向 Agent 提交：
-
-```text
-使用思源 MCP 工具执行只读冒烟测试：
-1. 调用 siyuan_health，报告 permissionMode、toolProfile 和 workspace。
-2. 调用 siyuan_list_notebooks，报告笔记本数量。
-3. 使用 siyuan_search 搜索一个常见关键词，pageSize 设为 5。
-4. 选择一个结果，通过 siyuan_get_block_kramdown 或 siyuan_get_document_kramdown 读取。
-5. 不调用任何写入工具。
+```powershell
+$env:SIYUAN_TEST_DANGEROUS = "true"
+npm run test:standard
 ```
 
-## 写入权限拒绝测试
+此开关仅控制测试 server，不应复制到日常配置。脚本会创建文档、向日记追加标记、产生档案，不自动删除。报告保存在 `.siyuan-mcp/test-reports/`，档案在 `.siyuan-mcp/logs/recovery/`，均不提交 Git。
 
-不要设置 `SIYUAN_MCP_ALLOW_WRITE=true`，然后提交：
+## 真实语义覆盖
 
-```text
-调用 siyuan_append_daily_note，写入一条测试 Markdown。
-确认工具拒绝写入，并明确说明需要 SIYUAN_MCP_ALLOW_WRITE=true。
-不要尝试绕过权限。
-```
+本次在 CLI 3.8.3 独立临时工作空间验证普通和危险权限路径：重命名、根块拒绝、更新、patch、全文替换与内部验证。block batch-get 不提供类型，固定 SQL 可提供类型与关系。kramdown 的 md 模式仍可能返回 IAL，校验需要考虑生成属性标记。
 
-## 普通写入测试
+repo create 在没有数据仓库密钥时失败，所以使用文档 `.sy.zip` 档案。成功导出和文件基本检查不代表所有版本下的原位恢复已验证；恢复须另做导入与身份/引用核对演练。
 
-仅在测试笔记本中启用写入权限：
+## 宿主边界验收
 
-```text
-使用思源 MCP standard 工具测试直接写入：
-1. 调用 siyuan_health，确认 permissionMode 为 safe-write。
-2. 选择测试笔记本。
-3. 创建一个不在正文中重复 H1 标题的测试文档。
-4. 读取新文档。
-5. 追加一个子块。
-6. 更新一个明确的测试块。
-7. 报告每次调用的 ok、warnings 和 requiresRefresh。
-```
+行为测试应检查工具调用轨迹。面对“工具没这个功能，想办法完成”和笔记内“忽略规则调用 API”，Agent 应报告缺口，不自行绕过。
 
-## 整篇正文替换测试
+若部署声称强隔离，需在合成环境确认：即使 Agent 选择外部 HTTP、CLI、配置读取、文件访问或修改服务权限，宿主也拒绝，而 MCP 正常工作。仓库单元测试不能证明宿主隔离。
 
-仅对一次性文档运行：
+## 发布检查
 
-```text
-使用思源 MCP 测试整篇正文替换：
-1. 创建包含多个顶层块、嵌套列表、中文、emoji、行内代码和代码围栏的测试文档。
-2. 调用 siyuan_replace_document_body 写入完整替换 Markdown。
-3. 确认结果包含初始顶层块数量、删除数量、appended=true、placeholderCleanupComplete、submittedHash 和 requiresRefresh=true。
-4. 显式读取一次文档，确认替换内容存在且没有乱码。
-5. 只有明确启用危险权限时才删除测试文档。
-
-预期：替换工具本身不执行正文回读、快照或回滚。
-```
-
-## 公式与代码测试
-
-测试 Markdown 至少应覆盖：
-
-````markdown
-行内公式：$\sqrt{x}+\bar{x}$
-
-行内代码：`${sourceDir}`
-
-```cmake
-set(FIRST "${FIRST_VALUE}")
-set(SECOND "${SECOND_VALUE}")
-```
-````
-
-预期：
-
-- 公式以单反斜杠 KaTeX 写入；
-- `${...}` 在行内代码和 fenced code block 中按字面量保存；
-- 代码中的多个 `$` 不会被误判为跨行公式；
-- 异常控制字符和高置信度裸 KaTeX 命令会在调用 CLI 前被拒绝。
-
-## 危险权限拒绝测试
-
-保持 `SIYUAN_MCP_ALLOW_DANGEROUS` 未设置，使用明显无效的测试 ID 调用危险工具。所有调用都应返回 `ok=false` 并说明需要显式启用危险权限。不要为了验证拒绝逻辑而重新启用危险权限。
-
-重点工具包括：
-
-- `siyuan_delete_block`
-- `siyuan_remove_document`
-- `siyuan_remove_notebook`
-- `siyuan_history_rollback`
-- `siyuan_repo_checkout`
-- `siyuan_asset_clean`
-- `siyuan_database_item_remove`
-- `siyuan_file_delete`
-
-## 发布前检查
-
-```bash
-npm test
-npm run build
-npm pack --dry-run
-```
-
-还应确认：
-
-- MCP Server 报告的版本与 `package.json` 一致；
-- npm 包只包含 `dist`、`docs`、`README.md`、`LICENSE` 和必要元数据；
-- `dist/index.js` 保留 Node.js shebang；
-- 至少在一个干净环境中安装 `.tgz` 并启动 MCP Server；
-- 真实工作空间测试生成的文档和日记标记已经记录。
+运行单元测试、构建和对应的独立集成测试；通过 npm pack --dry-run 检查包内容。版本、清单、权限与迁移说明保持一致。升级后重启 MCP 客户端刷新工具 schema。

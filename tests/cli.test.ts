@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { sanitizeAuditInput } from "../src/audit.js";
@@ -257,7 +257,7 @@ describe("tool profiles", () => {
     expect(names).toContain("siyuan_replace_document_body");
     expect(names).not.toContain("siyuan_sql_select");
     expect(names).not.toContain("siyuan_set_attrs");
-    expect(names).not.toContain("siyuan_rename_document");
+    expect(names).toContain("siyuan_rename_document");
     expect(names).not.toContain("siyuan_move_document");
     expect(names).not.toContain("siyuan_create_snapshot");
     expect(names).not.toContain("siyuan_reorganize_document");
@@ -400,16 +400,19 @@ describe("document body replacement", () => {
     const logDir = await mkdtemp(path.join(tmpdir(), "siyuan-mcp-test-"));
     const markdown = "# 中文标题\n\n正文🙂\n\n" + "长文本".repeat(4_000);
     const cli = new SiyuanCli(
-      { ...baseConfig, allowWrite: true, toolProfile: "standard", logDir },
+      { ...baseConfig, allowWrite: true, allowDangerous: true, toolProfile: "standard", logDir },
       async (_file, args) => {
+        if (args.includes("sql")) return { stdout: JSON.stringify([{id:"20260908154051-h3ysj72",root_id:"20260908154051-h3ysj72",parent_id:"",type:"d",markdown:"",ial:"",updated:""}]), stderr:"",exitCode:0,timedOut:false };
+        if (args.includes("export")) { await writeFile(args[args.indexOf("--output")+1], Buffer.concat([Buffer.from([80,75,3,4]),Buffer.alloc(30)])); return {stdout:"",stderr:"",exitCode:0,timedOut:false}; }
+        if (args.includes("kramdown")) return {stdout: markdown,stderr:"",exitCode:0,timedOut:false};
         calls.push(args);
         if (args.includes("children")) {
           childrenCall += 1;
           return {
             stdout: JSON.stringify(
               childrenCall === 1
-                ? [{ id: "first" }, { id: "second" }]
-                : [{ id: "placeholder", type: "p" }]
+                ? [{ id: "20260908154051-firstaa" }, { id: "20260908154051-seconda" }]
+                : [{ id: "20260908154051-placeho", type: "p", content: "", markdown: "" }]
             ),
             stderr: "",
             exitCode: 0,
@@ -422,22 +425,22 @@ describe("document body replacement", () => {
 
     try {
       const result = await replaceDocumentBodyDirectly(
-        { ...baseConfig, allowWrite: true, toolProfile: "standard", logDir },
+        { ...baseConfig, allowWrite: true, allowDangerous: true, toolProfile: "standard", logDir },
         cli,
-        "document-id",
+        "20260908154051-h3ysj72",
         markdown
       );
 
       expect(result).toMatchObject({
         ok: true,
         command: "document_replace_body",
-        data: { deletedCount: 2, appended: true, placeholderCleanupComplete: true, requiresRefresh: true }
+        data: { deletedCount: 2, appended: true, placeholderCleanupComplete: true, requiresRefresh: false }
       });
       expect(calls.filter((args) => args.includes("children"))).toHaveLength(2);
       expect(calls.filter((args) => args.includes("delete")).map((args) => args.at(-1))).toEqual([
-        "second",
-        "first",
-        "placeholder"
+        "20260908154051-seconda",
+        "20260908154051-firstaa",
+        "20260908154051-placeho"
       ]);
       const appendCalls = calls.filter((args) => args.includes("append"));
       expect(appendCalls).toHaveLength(1);
@@ -451,18 +454,21 @@ describe("document body replacement", () => {
     const logDir = await mkdtemp(path.join(tmpdir(), "siyuan-mcp-test-"));
     let childrenCall = 0;
     const cli = new SiyuanCli(
-      { ...baseConfig, allowWrite: true, toolProfile: "standard", logDir },
+      { ...baseConfig, allowWrite: true, allowDangerous: true, toolProfile: "standard", logDir },
       async (_file, args) => {
+        if (args.includes("sql")) return { stdout: JSON.stringify([{id:"20260908154051-h3ysj72",root_id:"20260908154051-h3ysj72",parent_id:"",type:"d",markdown:"",ial:"",updated:""}]), stderr:"",exitCode:0,timedOut:false };
+        if (args.includes("export")) { await writeFile(args[args.indexOf("--output")+1], Buffer.concat([Buffer.from([80,75,3,4]),Buffer.alloc(30)])); return {stdout:"",stderr:"",exitCode:0,timedOut:false}; }
+        if (args.includes("kramdown")) return {stdout: "replacement",stderr:"",exitCode:0,timedOut:false};
         if (args.includes("children")) {
           childrenCall += 1;
           return {
-            stdout: JSON.stringify(childrenCall === 1 ? [{ id: "old" }] : [{ id: "placeholder", type: "p" }]),
+            stdout: JSON.stringify(childrenCall === 1 ? [{ id: "20260908154051-oldaaaa" }] : [{ id: "20260908154051-placeho", type: "p", content: "", markdown: "" }]),
             stderr: "",
             exitCode: 0,
             timedOut: false
           };
         }
-        if (args.includes("placeholder")) {
+        if (args.includes("20260908154051-placeho")) {
           return { stdout: "", stderr: "cleanup failed", exitCode: 1, timedOut: false };
         }
         return { stdout: "ok\n", stderr: "", exitCode: 0, timedOut: false };
@@ -471,9 +477,9 @@ describe("document body replacement", () => {
 
     try {
       const result = await replaceDocumentBodyDirectly(
-        { ...baseConfig, allowWrite: true, toolProfile: "standard", logDir },
+        { ...baseConfig, allowWrite: true, allowDangerous: true, toolProfile: "standard", logDir },
         cli,
-        "document-id",
+        "20260908154051-h3ysj72",
         "replacement"
       );
 
@@ -492,13 +498,16 @@ describe("document body replacement", () => {
     const logDir = await mkdtemp(path.join(tmpdir(), "siyuan-mcp-test-"));
     let childrenCall = 0;
     const cli = new SiyuanCli(
-      { ...baseConfig, allowWrite: true, toolProfile: "standard", logDir },
+      { ...baseConfig, allowWrite: true, allowDangerous: true, toolProfile: "standard", logDir },
       async (_file, args) => {
+        if (args.includes("sql")) return { stdout: JSON.stringify([{id:"20260908154051-h3ysj72",root_id:"20260908154051-h3ysj72",parent_id:"",type:"d",markdown:"",ial:"",updated:""}]), stderr:"",exitCode:0,timedOut:false };
+        if (args.includes("export")) { await writeFile(args[args.indexOf("--output")+1], Buffer.concat([Buffer.from([80,75,3,4]),Buffer.alloc(30)])); return {stdout:"",stderr:"",exitCode:0,timedOut:false}; }
+        if (args.includes("kramdown")) return {stdout: "replacement",stderr:"",exitCode:0,timedOut:false};
         calls.push(args);
         if (args.includes("children")) {
           childrenCall += 1;
           return {
-            stdout: JSON.stringify(childrenCall === 1 ? [{ id: "old" }] : [{ id: "placeholder", type: "p" }]),
+            stdout: JSON.stringify(childrenCall === 1 ? [{ id: "20260908154051-oldaaaa" }] : [{ id: "20260908154051-placeho", type: "p", content: "", markdown: "" }]),
             stderr: "",
             exitCode: 0,
             timedOut: false
@@ -513,14 +522,14 @@ describe("document body replacement", () => {
 
     try {
       const result = await replaceDocumentBodyDirectly(
-        { ...baseConfig, allowWrite: true, toolProfile: "standard", logDir },
+        { ...baseConfig, allowWrite: true, allowDangerous: true, toolProfile: "standard", logDir },
         cli,
-        "document-id",
+        "20260908154051-h3ysj72",
         "replacement"
       );
 
       expect(result).toMatchObject({ ok: false, data: { appended: false } });
-      expect(calls.filter((args) => args.includes("delete")).map((args) => args.at(-1))).toEqual(["old"]);
+      expect(calls.filter((args) => args.includes("delete")).map((args) => args.at(-1))).toEqual(["20260908154051-oldaaaa"]);
     } finally {
       await rm(logDir, { recursive: true, force: true });
     }
@@ -530,13 +539,16 @@ describe("document body replacement", () => {
     const calls: string[][] = [];
     const logDir = await mkdtemp(path.join(tmpdir(), "siyuan-mcp-test-"));
     const cli = new SiyuanCli(
-      { ...baseConfig, allowWrite: true, toolProfile: "standard", logDir },
+      { ...baseConfig, allowWrite: true, allowDangerous: true, toolProfile: "standard", logDir },
       async (_file, args) => {
+        if (args.includes("sql")) return { stdout: JSON.stringify([{id:"20260908154051-h3ysj72",root_id:"20260908154051-h3ysj72",parent_id:"",type:"d",markdown:"",ial:"",updated:""}]), stderr:"",exitCode:0,timedOut:false };
+        if (args.includes("export")) { await writeFile(args[args.indexOf("--output")+1], Buffer.concat([Buffer.from([80,75,3,4]),Buffer.alloc(30)])); return {stdout:"",stderr:"",exitCode:0,timedOut:false}; }
+        if (args.includes("kramdown")) return {stdout: "replacement",stderr:"",exitCode:0,timedOut:false};
         calls.push(args);
         if (args.includes("children")) {
-          return { stdout: JSON.stringify([{ id: "first" }, { id: "second" }]), stderr: "", exitCode: 0, timedOut: false };
+          return { stdout: JSON.stringify([{ id: "20260908154051-firstaa" }, { id: "20260908154051-seconda" }]), stderr: "", exitCode: 0, timedOut: false };
         }
-        if (args.includes("first")) {
+        if (args.includes("20260908154051-firstaa")) {
           return { stdout: "", stderr: "delete failed", exitCode: 1, timedOut: false };
         }
         return { stdout: "ok\n", stderr: "", exitCode: 0, timedOut: false };
@@ -545,15 +557,15 @@ describe("document body replacement", () => {
 
     try {
       const result = await replaceDocumentBodyDirectly(
-        { ...baseConfig, allowWrite: true, toolProfile: "standard", logDir },
+        { ...baseConfig, allowWrite: true, allowDangerous: true, toolProfile: "standard", logDir },
         cli,
-        "document-id",
+        "20260908154051-h3ysj72",
         "replacement"
       );
 
       expect(result).toMatchObject({
         ok: false,
-        data: { deletedCount: 1, failedId: "first", appended: false, requiresRefresh: true }
+        data: { deletedCount: 1, failedId: "20260908154051-firstaa", appended: false, requiresRefresh: true }
       });
       expect(calls.some((args) => args.includes("append"))).toBe(false);
     } finally {
@@ -605,7 +617,7 @@ describe("audit input sanitization", () => {
       );
 
       expect(result).not.toHaveProperty("dryRun");
-      const auditEntry = JSON.parse(readFileSync(path.join(logDir, "writes.jsonl"), "utf8").trim());
+      const auditEntry = JSON.parse(readFileSync(path.join(logDir, "writes.jsonl"), "utf8").trim().split("\n").at(-1)!);
       expect(auditEntry).toMatchObject({ command: "block_append", dryRun: false, ok: true });
     } finally {
       await rm(logDir, { recursive: true, force: true });

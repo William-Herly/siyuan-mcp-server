@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod/v4";
 import type { ServerConfig } from "./config.js";
 import { SiyuanCli } from "./cli.js";
+import { backupDocument, readTargets, requireTarget } from "./writeSafety.js";
 import { normalizeDataRelativeAssetPath, registerCliTool, requireDangerous, runAuditedWrite, withDryRun } from "./toolHelpers.js";
 
 /**
@@ -23,6 +24,17 @@ export function registerDangerousTools(server: McpServer, config: ServerConfig, 
       }
 
       const dryRun = typeof args.dryRun === "boolean" ? args.dryRun : false;
+      if (command === "block_delete" || command === "document_remove") {
+        const targets = await readTargets(cli, [String(args.id)], command);
+        if (!(targets instanceof Map)) return targets;
+        const target = targets.get(String(args.id))!;
+        const invalid = requireTarget(target, command === "block_delete" ? "content" : "document", command);
+        if (invalid) return invalid;
+        const backup = await backupDocument(config, cli, target.root_id, command);
+        if (!backup.ok) return backup;
+        const result = await runAuditedWrite(config, cli, command, withDryRun(buildArgs(args), dryRun), auditedInput(args), dryRun);
+        return { ...result, recovery: backup.data };
+      }
       return runAuditedWrite(config, cli, command, withDryRun(buildArgs(args), dryRun), auditedInput(args), dryRun);
     });
   };
@@ -31,7 +43,7 @@ export function registerDangerousTools(server: McpServer, config: ServerConfig, 
     "siyuan_delete_block",
     "block_delete",
     "Deletes a block. Requires SIYUAN_MCP_ALLOW_DANGEROUS=true.",
-    { id: z.string().min(1), dryRun: z.boolean().default(true) },
+    { id: z.string().min(1), dryRun: z.boolean().default(false) },
     ({ id }) => ["block", "delete", "--id", String(id)]
   );
 
@@ -39,7 +51,7 @@ export function registerDangerousTools(server: McpServer, config: ServerConfig, 
     "siyuan_remove_document",
     "document_remove",
     "Removes a document. Requires SIYUAN_MCP_ALLOW_DANGEROUS=true.",
-    { id: z.string().min(1), dryRun: z.boolean().default(true) },
+    { id: z.string().min(1), dryRun: z.boolean().default(false) },
     ({ id }) => ["document", "remove", "--id", String(id)]
   );
 
@@ -47,7 +59,7 @@ export function registerDangerousTools(server: McpServer, config: ServerConfig, 
     "siyuan_remove_notebook",
     "notebook_remove",
     "Removes a notebook. Requires SIYUAN_MCP_ALLOW_DANGEROUS=true.",
-    { id: z.string().min(1), dryRun: z.boolean().default(true) },
+    { id: z.string().min(1), dryRun: z.boolean().default(false) },
     ({ id }) => ["notebook", "remove", "--id", String(id)]
   );
 
@@ -55,7 +67,7 @@ export function registerDangerousTools(server: McpServer, config: ServerConfig, 
     "siyuan_history_rollback",
     "history_rollback",
     "Rolls back a history entry. Requires SIYUAN_MCP_ALLOW_DANGEROUS=true.",
-    { path: z.string().min(1), dryRun: z.boolean().default(true) },
+    { path: z.string().min(1), dryRun: z.boolean().default(false) },
     ({ path }) => ["history", "rollback", "--path", String(path)]
   );
 
@@ -63,7 +75,7 @@ export function registerDangerousTools(server: McpServer, config: ServerConfig, 
     "siyuan_history_clear",
     "history_clear",
     "Clears all history. Requires SIYUAN_MCP_ALLOW_DANGEROUS=true.",
-    { dryRun: z.boolean().default(true) },
+    { dryRun: z.boolean().default(false) },
     () => ["history", "clear"]
   );
 
@@ -71,7 +83,7 @@ export function registerDangerousTools(server: McpServer, config: ServerConfig, 
     "siyuan_repo_checkout",
     "repo_checkout",
     "Checks out a repository snapshot. Requires SIYUAN_MCP_ALLOW_DANGEROUS=true.",
-    { id: z.string().min(1), dryRun: z.boolean().default(true) },
+    { id: z.string().min(1), dryRun: z.boolean().default(false) },
     ({ id }) => ["repo", "checkout", "--id", String(id)]
   );
 
@@ -79,7 +91,7 @@ export function registerDangerousTools(server: McpServer, config: ServerConfig, 
     "siyuan_repo_purge",
     "repo_purge",
     "Purges old repository snapshots. Requires SIYUAN_MCP_ALLOW_DANGEROUS=true.",
-    { dryRun: z.boolean().default(true) },
+    { dryRun: z.boolean().default(false) },
     () => ["repo", "purge"]
   );
 
@@ -87,7 +99,7 @@ export function registerDangerousTools(server: McpServer, config: ServerConfig, 
     "siyuan_repo_file_rollback",
     "repo_file_rollback",
     "Rolls back one file from a repository snapshot. Requires SIYUAN_MCP_ALLOW_DANGEROUS=true.",
-    { id: z.string().min(1), dryRun: z.boolean().default(true) },
+    { id: z.string().min(1), dryRun: z.boolean().default(false) },
     ({ id }) => ["repo", "file", "rollback", "--id", String(id)]
   );
 
@@ -95,7 +107,7 @@ export function registerDangerousTools(server: McpServer, config: ServerConfig, 
     "siyuan_asset_clean",
     "asset_clean",
     "Cleans unused assets. Requires SIYUAN_MCP_ALLOW_DANGEROUS=true.",
-    { path: z.string().optional(), dryRun: z.boolean().default(true) },
+    { path: z.string().optional(), dryRun: z.boolean().default(false) },
     ({ path }) => {
       const cliArgs = ["asset", "clean"];
       if (path) {
@@ -109,7 +121,7 @@ export function registerDangerousTools(server: McpServer, config: ServerConfig, 
     "siyuan_database_item_remove",
     "database_item_remove",
     "Removes database rows. Requires SIYUAN_MCP_ALLOW_DANGEROUS=true.",
-    { av: z.string().min(1), ids: z.array(z.string().min(1)).min(1).max(50), dryRun: z.boolean().default(true) },
+    { av: z.string().min(1), ids: z.array(z.string().min(1)).min(1).max(50), dryRun: z.boolean().default(false) },
     ({ av, ids }) => ["database", "item", "remove", "--av", String(av), "--ids", (ids as string[]).join(",")]
   );
 
@@ -121,7 +133,7 @@ export function registerDangerousTools(server: McpServer, config: ServerConfig, 
       av: z.string().min(1),
       key: z.string().min(1),
       removeRelationDest: z.boolean().optional(),
-      dryRun: z.boolean().default(true)
+      dryRun: z.boolean().default(false)
     },
     ({ av, key, removeRelationDest }) => {
       const cliArgs = ["database", "key", "remove", "--av", String(av), "--key", String(key)];
@@ -136,7 +148,7 @@ export function registerDangerousTools(server: McpServer, config: ServerConfig, 
     "siyuan_database_clean",
     "database_clean",
     "Cleans unused databases. Requires SIYUAN_MCP_ALLOW_DANGEROUS=true.",
-    { av: z.string().optional(), dryRun: z.boolean().default(true) },
+    { av: z.string().optional(), dryRun: z.boolean().default(false) },
     ({ av }) => {
       const cliArgs = ["database", "clean"];
       if (av) {
@@ -150,7 +162,7 @@ export function registerDangerousTools(server: McpServer, config: ServerConfig, 
     "siyuan_template_remove",
     "template_remove",
     "Removes a template. Requires SIYUAN_MCP_ALLOW_DANGEROUS=true.",
-    { path: z.string().min(1), dryRun: z.boolean().default(true) },
+    { path: z.string().min(1), dryRun: z.boolean().default(false) },
     ({ path }) => ["template", "remove", "--path", String(path)]
   );
 
@@ -158,7 +170,7 @@ export function registerDangerousTools(server: McpServer, config: ServerConfig, 
     "siyuan_file_delete",
     "file_delete",
     "Deletes a workspace file or directory. Requires SIYUAN_MCP_ALLOW_DANGEROUS=true.",
-    { path: z.string().min(1), dryRun: z.boolean().default(true) },
+    { path: z.string().min(1), dryRun: z.boolean().default(false) },
     ({ path }) => ["file", "delete", String(path)]
   );
 }
