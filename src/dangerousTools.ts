@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod/v4";
 import type { ServerConfig } from "./config.js";
 import { SiyuanCli } from "./cli.js";
-import { backupDocument, readTargets, requireTarget } from "./writeSafety.js";
+import { readTargets, requireTarget } from "./writeSafety.js";
 import { normalizeDataRelativeAssetPath, registerCliTool, requireDangerous, runAuditedWrite, withDryRun } from "./toolHelpers.js";
 
 /**
@@ -30,10 +30,8 @@ export function registerDangerousTools(server: McpServer, config: ServerConfig, 
         const target = targets.get(String(args.id))!;
         const invalid = requireTarget(target, command === "block_delete" ? "content" : "document", command);
         if (invalid) return invalid;
-        const backup = await backupDocument(config, cli, target.root_id, command);
-        if (!backup.ok) return backup;
         const result = await runAuditedWrite(config, cli, command, withDryRun(buildArgs(args), dryRun), auditedInput(args), dryRun);
-        return { ...result, recovery: backup.data };
+        return result;
       }
       return runAuditedWrite(config, cli, command, withDryRun(buildArgs(args), dryRun), auditedInput(args), dryRun);
     });

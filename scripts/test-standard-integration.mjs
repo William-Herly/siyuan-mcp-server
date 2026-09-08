@@ -7,7 +7,6 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 assert.ok(process.env.SIYUAN_TEST_WORKSPACE, "Set SIYUAN_TEST_WORKSPACE to an isolated test workspace; no default workspace is allowed.");
 assert.ok(process.env.SIYUAN_TEST_NOTEBOOK_ID, "Set SIYUAN_TEST_NOTEBOOK_ID explicitly; no automatic notebook selection is allowed.");
-const testDangerous = process.env.SIYUAN_TEST_DANGEROUS === "true";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const packageJson = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
 const packageVersion = packageJson.version;
@@ -54,7 +53,7 @@ const expectedTools = new Set([
 const env = Object.fromEntries(Object.entries(process.env).filter((entry) => typeof entry[1] === "string"));
 env.SIYUAN_MCP_PROFILE = "maintain";
 env.SIYUAN_MCP_ALLOW_WRITE = "true";
-env.SIYUAN_MCP_ALLOW_DANGEROUS = String(testDangerous);
+env.SIYUAN_MCP_ALLOW_DANGEROUS = "false";
 if (process.env.SIYUAN_TEST_WORKSPACE) {
   env.SIYUAN_MCP_WORKSPACE = process.env.SIYUAN_TEST_WORKSPACE;
 }
@@ -68,7 +67,7 @@ const transport = new StdioClientTransport({
 });
 transport.stderr?.on("data", (chunk) => report.stderr.push(String(chunk).trim()));
 
-const client = new Client({ name: "siyuan-standard-integration-test", version: "1.0.0" });
+const client = new Client({name:"siyuan-standard-integration-test",version:"1.0.0"});
 
 function normalizedResult(result) {
   assert.equal(result.isError, result.structuredContent?.ok === false ? true : undefined, "MCP error flag disagrees with execution result");
@@ -146,7 +145,7 @@ try {
 
   const health = await call("siyuan_health");
   assert.equal(health.data.toolProfile, "standard");
-  assert.equal(health.data.permissionMode, testDangerous ? "dangerous" : "safe-write");
+  assert.equal(health.data.permissionMode, "safe-write");
 
   const notebooks = await call("siyuan_list_notebooks");
   const notebookList = Array.isArray(notebooks.data) ? notebooks.data : notebooks.data?.notebooks;
@@ -247,16 +246,14 @@ try {
     "- whole-body replacement passed",
     "- 中文与 emoji 🙂 preserved"
   ].join("\n");
-  const replaced = await call("siyuan_replace_document_body", { id: documentId, markdown: replacementMarkdown }, !testDangerous);
-  if (testDangerous) {
+  const replaced = await call("siyuan_replace_document_body", { id: documentId, markdown: replacementMarkdown });
+  {
     assert.equal(replaced.data.appended, true);
     assert.equal(replaced.verification, "passed");
-    assert.ok(replaced.recovery?.archive);
+    assert.equal(replaced.recovery, undefined);
     const finalDocument = await call("siyuan_get_document_kramdown", { id: documentId, mode: "md" });
     assert.match(finalDocument.data.markdown, new RegExp(runId));
     assert.match(finalDocument.data.markdown, /中文与 emoji/);
-  } else {
-    assert.equal(replaced.code, "PERMISSION_DENIED");
   }
 
   const dailyMarkdown = `- ${dailyMarker}: standard tools passed; test document ((` + documentId + " 'integration test')).";

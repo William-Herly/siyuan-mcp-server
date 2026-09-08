@@ -52,7 +52,7 @@
 | 块读取 | `siyuan_get_block`、`siyuan_batch_get_blocks`、`siyuan_block_stat` |
 | 日记 | `siyuan_append_daily_note` |
 
-standard 可通过校验后的 patch 删除内容块；全文替换虽然可见，但需要危险权限。标准配置不暴露独立文档删除或文件管理工具。所有内容更新和删除入口均拒绝文档根。
+standard 可通过校验后的 patch 删除内容块；全文替换虽然可见，但必须取得 Agent 在聊天中取得用户确认。标准配置不暴露独立文档删除或文件管理工具。所有内容更新和删除入口均拒绝文档根。
 
 ## `full` 读取工具
 
@@ -102,7 +102,7 @@ MCP 不公开 dryRun 参数。正常调用在权限允许后直接执行，不�
 
 ## 危险工具
 
-全文替换在 standard 和 full 中可见，但要求危险权限。full 的 `siyuan_file_write`、`siyuan_file_rename`、`siyuan_file_copy`、`siyuan_import_sy`、`siyuan_import_data`、`siyuan_sync_pull` 也要求危险权限。
+全文替换在 standard 和 full 中可见，要求普通写入权限及 Agent 在聊天中取得用户确认。full 的 `siyuan_file_write`、`siyuan_file_rename`、`siyuan_file_copy`、`siyuan_import_sy`、`siyuan_import_data`、`siyuan_sync_pull` 也要求危险权限。
 
 以下独立管理工具只在 `full` 中注册，并要求 `SIYUAN_MCP_ALLOW_DANGEROUS=true`：
 
@@ -137,15 +137,15 @@ patch 只作用于指定 documentId，接受 1–20 个有序操作，例如：
 
 append/insert 允许多块 Markdown；update 只允许单块；delete 只允许内容块。父子冲突、重复破坏性目标、跨文档目标在首次写入前拒绝。标题块更新/删除应单独调用。file 输入已移除。
 
-包含 update/delete 时创建一次文档恢复档案；执行失败停止并返回已完成列表、失败位置和 recovery。不会自动回滚。最终一次查询合并验证被更新/删除目标；验证成功返回 requiresRefresh=false，不要求 Agent 回读全文。
+包含 update/delete 时也不自动备份；执行失败停止并返回已完成列表和失败位置。不会自动回滚。最终一次查询合并验证被更新/删除目标；验证成功返回 requiresRefresh=false，不要求 Agent 回读全文。
 
 ## 整篇正文替换
 
 参数为 id（文档 ID）和 markdown（完整正文；空字符串清空）。只用于明确的全文重写，不得用于改名或局部修改。必须有危险权限。
 
-类型检查与文档档案成功后，冻结初始顶层块集合、倒序删除、识别明确空占位块、追加一次、清理已识别占位块。最后内部读取正文一次验证。返回删除数量、追加状态、占位清理结果、submittedHash、verification 和 recovery。submittedHash 仅代表提交内容，不是旧版本或写入证明。
+权限与类型检查成功后，冻结初始顶层块集合、倒序删除、识别明确空占位块、追加一次、清理已识别占位块。最后内部读取正文一次验证。返回删除数量、追加状态、占位清理结果、submittedHash、verification。submittedHash 仅代表提交内容，不是旧版本或写入证明。
 
-占位块信息不足时不猜测删除；清理失败不会撤销已追加的正文。多步失败报告进度和状态，不自动回滚。恢复和验证限制见[写入保护](safety.md)。
+占位块信息不足时不猜测删除；清理失败不会撤销已追加的正文。多步失败报告进度和状态，不自动回滚。写入风险和验证限制见[写入保护](safety.md)。
 
 ## CLI 兼容性
 

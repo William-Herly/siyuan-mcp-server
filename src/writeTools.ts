@@ -16,7 +16,7 @@ import {
   withDryRun
 } from "./toolHelpers.js";
 
-import { BLOCK_ID, backupDocument, checkInsertion, normalizeMarkdown, readTargets, requireTarget, safetyError, verifyMarkdown } from "./writeSafety.js";
+import { BLOCK_ID, checkInsertion, normalizeMarkdown, readTargets, requireTarget, safetyError, verifyMarkdown } from "./writeSafety.js";
 
 const patchOperationSchema = z.discriminatedUnion("op", [
   z.object({
@@ -432,7 +432,7 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
   registerCliTool(
     server,
     "siyuan_update_block",
-    "Updates exactly one existing SiYuan content block. One top-level list item counts as one block; use insert or append for multiple sibling items or sections. Document roots are rejected. Creates one document recovery archive and verifies only the target block; use the returned ID on success. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
+    "Updates exactly one existing SiYuan content block. One top-level list item counts as one block; use insert or append for multiple sibling items or sections. Document roots are rejected. No automatic backup or rollback. Verifies only the target block; use the returned ID on success. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
     {
       id: z.string().min(1),
       markdown: writableMarkdownSchema(
@@ -446,7 +446,7 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
   registerCliTool(
     server,
     "siyuan_patch_blocks",
-    "Applies 1-20 operations within documentId. Prechecks target types, scope and conflicting ancestor/target dependencies before writing. Update/delete creates one document recovery archive per call. No automatic rollback. Returns final verification and partial progress; do not repeat verified writes or blindly retry a failed batch. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
+    "Applies 1-20 operations within documentId. Prechecks target types, scope and conflicting ancestor/target dependencies before writing. Update/delete can remove existing content and descendants. No automatic backup or rollback. Returns final verification and partial progress; do not repeat verified writes or blindly retry a failed batch. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
     {
       documentId: z.string().min(1).describe("Document containing every operation target."),
       operations: z.array(patchOperationSchema).min(1).max(20).describe("Ordered operations; maximum 20 per call."),
@@ -458,7 +458,7 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
   registerCliTool(
     server,
     "siyuan_replace_document_body",
-    "Replaces the complete document body, preserving its document ID. Only for an explicitly requested full rewrite, never for titles or local edits. Creates a document recovery archive and verifies the body once internally. Non-transactional; no automatic rollback. Requires SIYUAN_MCP_ALLOW_DANGEROUS=true.",
+    "Replaces the complete document body, preserving its document ID. Before calling, tell the user which document will be replaced, show the proposed complete content, and explain that existing body blocks will be removed with no automatic backup or rollback. You MUST ask the user in chat and WAIT for their explicit approval of this target and replacement content before calling. Silence, broad editing permission, or your own judgment is not approval. If the target or proposed content changes, ask again. This is an agent instruction; the server does not verify chat consent. Never substitute block edits to bypass confirmation. Requires write permission; dangerous permission never bypasses confirmation. Verifies the body once internally.",
     {
       id: z.string().min(1).describe("Existing SiYuan document ID."),
       markdown: writableMarkdownSchema(false, "Complete replacement Markdown body. Pass an empty string to clear the body.")
@@ -766,7 +766,7 @@ export function registerWriteTools(server: McpServer, config: ServerConfig, cli:
 
 export async function replaceDocumentBodyDirectly(config: ServerConfig, cli: SiyuanCli, id: string, markdown: string) {
   const command = "document_replace_body";
-  const permission = requireDangerous(config, command);
+  const permission = requireWrite(config, command);
   if (permission) return permission;
   const targets = await readTargets(cli, [id], command);
   if (!(targets instanceof Map)) return targets;
@@ -774,11 +774,9 @@ export async function replaceDocumentBodyDirectly(config: ServerConfig, cli: Siy
   if (invalid) return invalid;
   const issues = validateWritableMarkdown(markdown);
   if (issues.length) return safetyError(command, "INVALID_MARKDOWN", issues.join(" "));
-  const backup = await backupDocument(config, cli, id, command);
-  if (!backup.ok) return backup;
   const result = await replaceDocumentBodySteps(config, cli, id, markdown);
   const verified = await verifyMarkdown(cli, id, markdown, result);
-  return { ...verified, recovery: backup.data, warnings: [...backup.warnings, ...verified.warnings] };
+  return verified;
 }
 
 async function replaceDocumentBodySteps(
@@ -1048,15 +1046,13 @@ async function patchBlocksDirectly(config: ServerConfig, cli: SiyuanCli, documen
     // Heading updates can affect section ownership beyond parent_id relationships.
     if (targets.get(op.id)!.type === "h" && operations.length > 1) return safetyError(command, "CONFLICTING_OPERATIONS", "Edit or delete a heading in a separate call before composing changes to its section.");
   }
-  const backup = destructive.length ? await backupDocument(config, cli, documentId, command) : undefined;
-  if (backup && !backup.ok) return backup;
   const applied: Record<string, unknown>[] = [];
-  const warnings = [...(backup?.warnings ?? [])];
+  const warnings: string[] = [];
   for (const { index, operation, built } of prepared) {
     if ("error" in built) throw new Error("Invalid prepared operation");
     const result = await runAuditedWrite(config, cli, built.command, withDryRun(built.args, dryRun), { operation, index, documentId, dryRun }, dryRun);
     warnings.push(...result.warnings);
-    if (!result.ok) return { ok: false, command, code: "PARTIAL_FAILURE", execution: result.execution === "unknown" ? "unknown" : applied.length ? "partial" : "not-started", retryable: false, warnings, recovery: backup?.data, data: { applied, failed: { index, op: operation.op, ...result }, requiresRefresh: true } };
+    if (!result.ok) return { ok: false, command, code: "PARTIAL_FAILURE", execution: result.execution === "unknown" ? "unknown" : applied.length ? "partial" : "not-started", retryable: false, warnings, data: { applied, failed: { index, op: operation.op, ...result }, requiresRefresh: true } };
     applied.push({ index, op: operation.op, id: "id" in operation ? operation.id : undefined, result: result.data });
   }
   let verified = true;
@@ -1067,7 +1063,7 @@ async function patchBlocksDirectly(config: ServerConfig, cli: SiyuanCli, documen
       : remaining.has(op.id) && normalizeMarkdown(remaining.get(op.id)!.markdown) === normalizeMarkdown(op.markdown));
   }
   return { ok: verified, command, execution: "applied", verification: destructive.length ? verified ? "passed" : "unknown" : "not-required",
-    ...(verified ? {} : { code: "VERIFICATION_FAILED", retryable: false }), recovery: backup?.data,
+    ...(verified ? {} : { code: "VERIFICATION_FAILED", retryable: false }),
     warnings: [...warnings, ...(verified ? [] : ["The batch ran, but final targets could not be verified. Inspect the affected scope; do not repeat the batch."])],
     data: { documentId, applied, appliedCount: applied.length, requiresRefresh: !verified } };
 }
@@ -1210,12 +1206,10 @@ async function updateBlockDirectly(
   if (invalid) return invalid;
   const issues = validateWritableMarkdown(markdown);
   if (issues.length) return safetyError("block_update", "INVALID_MARKDOWN", issues.join(" "));
-  const backup = await backupDocument(config, cli, target.root_id, "block_update");
-  if (!backup.ok) return backup;
   const result = await runAuditedWrite(config, cli, "block_update",
     withDryRun(["block", "update", "--id", id, "--data", markdown], dryRun),
     { id, markdown, dryRun, reason: "block_update" }, dryRun);
-  return { ...await verifyMarkdown(cli, id, markdown, result), recovery: backup.data };
+  return verifyMarkdown(cli, id, markdown, result);
 }
 
 function blockContentArgs(markdown: string):

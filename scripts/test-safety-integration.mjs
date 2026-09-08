@@ -29,7 +29,7 @@ const ready = new Promise((resolve, reject) => {
 async function connect(profile, write, dangerous) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([, value]) => typeof value === "string"));
   Object.assign(env, { SIYUAN_MCP_WORKSPACE: workspace, SIYUAN_MCP_LOG_DIR: logDir, SIYUAN_MCP_PROFILE: profile, SIYUAN_MCP_ALLOW_WRITE: String(write), SIYUAN_MCP_ALLOW_DANGEROUS: String(dangerous), SIYUAN_MCP_CLI_PATH: cliPath });
-  const client = new Client({ name: "safety-validation", version: "1.0.0" });
+  const client = new Client({name:"safety-validation",version:"1.0.0"});
   clients.push(client);
   await client.connect(new StdioClientTransport({ command: process.execPath, args: [path.join(root, "dist/index.js")], cwd: root, env, stderr: "pipe" }));
   return client;
@@ -42,11 +42,7 @@ async function call(client, name, args = {}, code) {
   report.calls.push({ name, elapsedMs: Math.round(performance.now() - start), ok: result?.ok, isError: response.isError, code: result?.code, verification: result?.verification, recovery: result?.recovery });
   if (code === "SCHEMA") { assert.equal(response.isError, true); return response; }
   assert.ok(result, `Missing structured content: ${JSON.stringify(response)}`);
-  if (!code && result.code === "BACKUP_FAILED") {
-    assert.equal(result.execution, "not-started");
-    assert.equal(result.retryable, false);
-    throw Object.assign(new Error(`${name}: native backup unavailable; success path not exercised`), { blocked: true });
-  }
+
   assert.equal(result.ok, !code, `${name}: ${JSON.stringify(result)}`);
   assert.equal(response.isError, code ? true : undefined);
   if (code) assert.equal(result.code, code);
@@ -86,7 +82,7 @@ try {
     assert.match(standard.getInstructions(), /Do not substitute direct HTTP/);
     const health = await call(standard, "siyuan_health");
     assert.equal(health.data.writeCapabilities.siyuan_rename_document.status, "available");
-    assert.equal(health.data.writeCapabilities.siyuan_replace_document_body.status, "permission-denied");
+    assert.equal(health.data.writeCapabilities.siyuan_replace_document_body.status, "available");
   });
   await test("root updates/deletes rejected without changing document or creating archives", async () => {
     const id = await create(), before = await body(id), count = (await archives()).length;
@@ -113,7 +109,7 @@ try {
     await call(admin, "siyuan_replace_document_body", { id: block, markdown: "wrong" }, "TARGET_TYPE_MISMATCH");
     await call(standard, "siyuan_update_block", { id: "20200101000000-missing", markdown: "wrong" }, "TARGET_NOT_FOUND");
     await call(readonly, "siyuan_append_block", { parent: id, markdown: "wrong" }, "PERMISSION_DENIED");
-    await call(standard, "siyuan_replace_document_body", { id, markdown: "wrong" }, "PERMISSION_DENIED");
+    await call(readonly, "siyuan_replace_document_body", { id, markdown: "wrong" }, "PERMISSION_DENIED");
     assert.equal(await body(id), before);
   });
   await test("schema and missing tools never become fallback execution", async () => {
@@ -143,31 +139,18 @@ try {
     await call(standard, "siyuan_insert_block", { parent: id, previous: block, markdown: "Inserted 🙂" });
     assert.equal((await archives()).length, count); assert.match(await body(id), /Inserted 🙂/);
   });
-  await test("current incompatible export blocks all destructive paths before changing content", async () => {
-    const id = await create(), block = (await children(id))[0].id, before = await body(id);
-    for (const [name, args] of [
-      ["siyuan_update_block", {id:block,markdown:"wrong"}],
-      ["siyuan_patch_blocks", {documentId:id,operations:[{op:"append",parent:id,markdown:"wrong"},{op:"delete",id:block}]}],
-      ["siyuan_replace_document_body", {id,markdown:"wrong"}],
-      ["siyuan_delete_block", {id:block}],
-      ["siyuan_remove_document", {id}]
-    ]) {
-      await call(admin,name,args,"BACKUP_FAILED");
-      assert.equal(await body(id),before);
-    }
-  });
   for (const [label, markdown] of [["paragraph and formulas", "中文🙂 $\\sqrt{x}+\\bar{x}$"], ["fenced code", "```cmake\nset(X \"${VALUE}\")\n```"], ["single nested list item", "- Parent changed\n  - Child changed"]]) {
     await test(`single-block update: ${label}`, async () => {
       const id = await create(), block = (await children(id))[0].id, count = (await archives()).length;
       const result = await call(standard, "siyuan_update_block", { id: block, markdown });
-      assert.equal(result.verification, "passed"); assert.equal(result.data.requiresRefresh, false); assert.equal((await archives()).length, count + 1);
-      assert.ok(result.recovery.archive); return { recovery: result.recovery };
+      assert.equal(result.verification, "passed"); assert.equal(result.data.requiresRefresh, false); assert.equal((await archives()).length, count);
+      assert.equal(result.recovery, undefined);
     });
   }
-  await test("independent mixed batch uses one backup and one verification", async () => {
+  await test("independent mixed batch verifies without backup", async () => {
     const id = await create(), blocks = await children(id), count = (await archives()).length;
     const result = await call(standard, "siyuan_patch_blocks", { documentId: id, operations: [{ op: "update", id: blocks[0].id, markdown: "Updated" }, { op: "delete", id: blocks[1].id }, { op: "append", parent: id, markdown: "Appended" }] });
-    assert.equal(result.data.appliedCount, 3); assert.equal(result.verification, "passed"); assert.equal(result.data.requiresRefresh, false); assert.equal((await archives()).length, count + 1);
+    assert.equal(result.data.appliedCount, 3); assert.equal(result.verification, "passed"); assert.equal(result.data.requiresRefresh, false); assert.equal((await archives()).length, count);
   });
   await test("20-operation limit succeeds without repeated full reads or backups", async () => {
     const id = await create(), count = (await archives()).length;
@@ -178,7 +161,7 @@ try {
     await test(`whole replacement: ${label}`, async () => {
       const id = await create(), count = (await archives()).length;
       const result = await call(admin, "siyuan_replace_document_body", { id, markdown });
-      assert.equal(result.verification, "passed"); assert.equal(result.data.requiresRefresh, false); assert.equal((await archives()).length, count + 1);
+      assert.equal(result.verification, "passed"); assert.equal(result.data.requiresRefresh, false); assert.equal((await archives()).length, count);
       assert.equal(normalizeMarkdown(await body(id)), normalizeMarkdown(markdown));
     });
   }
@@ -189,37 +172,29 @@ try {
     await call(safeFull, "siyuan_import_sy", { file: "unused.zip", notebook }, "PERMISSION_DENIED");
     await call(safeFull, "siyuan_sync_pull", {}, "PERMISSION_DENIED");
   });
-  await test("independent dangerous block and document deletion create backups", async () => {
+  await test("independent dangerous block and document deletion without export", async () => {
     const id = await create(), block = (await children(id))[0].id, count = (await archives()).length;
-    assert.ok((await call(admin, "siyuan_delete_block", { id: block })).recovery.archive);
+    assert.equal((await call(admin, "siyuan_delete_block", { id: block })).recovery, undefined);
     assert.ok(!(await children(id)).some((b) => b.id === block));
-    assert.ok((await call(admin, "siyuan_remove_document", { id })).recovery.archive);
-    assert.equal((await archives()).length, count + 2);
+    assert.equal((await call(admin, "siyuan_remove_document", { id })).recovery, undefined);
+    assert.equal((await archives()).length, count);
   });
   await test("serialized concurrent calls preserve both appends", async () => {
     const id = await create();
     await Promise.all([call(standard, "siyuan_append_block", { parent: id, markdown: "Concurrent A" }), call(standard, "siyuan_append_block", { parent: id, markdown: "Concurrent B" })]);
     const markdown = await body(id); assert.match(markdown, /Concurrent A/); assert.match(markdown, /Concurrent B/);
   });
-  await test("document recovery archive can be imported after deletion in disposable notebook", async () => {
-    const id = await create("Recovery 中文🙂\n\n- Original item"), block = (await children(id))[0].id;
-    await call(admin, "siyuan_set_attrs", { id: block, attrs: { "custom-recovery": "preserve" } });
-    const before = await body(id);
-    const title = (await call(admin, "siyuan_get_block", { id })).data.ial.title;
-    const removed = await call(admin, "siyuan_remove_document", { id });
-    await call(admin, "siyuan_import_sy", { file: removed.recovery.archive, notebook });
-    const found = (await call(admin, "siyuan_document_search", { keyword: title })).data;
-    assert.equal(found.length, 1);
-    const restoredId = path.basename(found[0].path, ".sy");
-    assert.equal(normalizeMarkdown(await body(restoredId)), normalizeMarkdown(before));
-    const restoredBlocks = await children(restoredId);
-    const restored = (await call(admin, "siyuan_get_block", { id: restoredBlocks[0].id })).data;
-    assert.equal(restored.ial["custom-recovery"], "preserve");
-    return { originalId: id, restoredId, preservedDocumentId: id === restoredId, preservedFirstBlockId: block === restoredBlocks[0].id };
+  await test("standard replacement uses write permission without client elicitation", async () => {
+    const id = await create();
+    const result = await call(standard, "siyuan_replace_document_body", {id,markdown:"Approved test replacement"});
+    assert.equal(result.verification,"passed");
+    assert.equal(normalizeMarkdown(await body(id)),normalizeMarkdown("Approved test replacement"));
   });
   await test("audit contains intent/result/rejection with Markdown redacted", async () => {
     const entries = (await readFile(path.join(logDir, "writes.jsonl"), "utf8")).trim().split("\n").map(JSON.parse);
     for (const phase of ["intent", "result", "rejected"]) assert.ok(entries.some((entry) => entry.input.auditPhase === phase));
+    assert.ok(!entries.some((entry) => entry.command === "document_backup"));
+    assert.equal((await archives()).length, 0);
     for (const entry of entries) if (entry.input.markdown) assert.equal(entry.input.markdown.redacted, true);
     return { entries: entries.length, archives: (await archives()).length };
   });

@@ -1,4 +1,3 @@
-import { zipSync, strToU8 } from "fflate";
 import { afterEach, describe, expect, it } from "vitest";
 import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -6,7 +5,7 @@ import path from "node:path";
 import { z } from "zod/v4";
 import { SiyuanCli } from "../src/cli.js";
 import { registerTools } from "../src/tools.js";
-import { normalizeMarkdown, validateNativeArchive } from "../src/writeSafety.js";
+import { normalizeMarkdown } from "../src/writeSafety.js";
 import { runAuditedWrite } from "../src/toolHelpers.js";
 import type { ServerConfig } from "../src/config.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -16,7 +15,7 @@ const row = (id: string, root_id = DOC, parent_id = DOC, type = "p", markdown = 
 const directories: string[] = [];
 afterEach(async () => { for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }); });
 
-async function fixture(options: { dangerous?: boolean; readonly?: boolean; fail?: string; rows?: ReturnType<typeof row>[]; invalidArchive?: boolean; unknownType?: boolean } = {}) {
+async function fixture(options: { dangerous?: boolean; readonly?: boolean; fail?: string; rows?: ReturnType<typeof row>[]; unknownType?: boolean } = {}) {
   const logDir = await mkdtemp(path.join(tmpdir(), "siyuan-safety-test-")); directories.push(logDir);
   const config: ServerConfig = { workspace: "MOCK", cliPath: "NEVER_EXECUTE", logDir, timeoutMs: 100, allowWrite: !options.readonly, allowDangerous: options.dangerous ?? false, toolProfile: "full" };
   const rows = options.rows ?? [row(DOC, DOC, "", "d", ""), row(BLOCK), row(CHILD, DOC, BLOCK), row(OTHER)];
@@ -24,6 +23,7 @@ async function fixture(options: { dangerous?: boolean; readonly?: boolean; fail?
   let title = "old";
   const cli = new SiyuanCli(config, async (_file, args) => {
     calls.push(args);
+    if (args.includes("export")) throw new Error("Writes must not automatically export documents");
     const ok = (data: unknown) => ({ stdout: typeof data === "string" ? data : JSON.stringify(data), stderr: "", exitCode: 0, timedOut: false });
     const id = args[args.indexOf("--id") + 1];
     if (options.fail && args.includes(options.fail)) return { stdout: "", stderr: "injected failure", exitCode: 1, timedOut: options.fail === "update" };
@@ -31,7 +31,6 @@ async function fixture(options: { dangerous?: boolean; readonly?: boolean; fail?
       const query = args.at(-1)!;
       return ok(rows.filter((r) => query.includes("WHERE root_id") ? r.root_id === DOC : query.includes(`'${r.id}'`)).map((r) => options.unknownType ? { ...r, type: "future_type" } : r));
     }
-    if (args.includes("export")) { await writeFile(args[args.indexOf("--output") + 1], options.invalidArchive ? zipSync({"fake.sy":strToU8("# Markdown is not native SY")}) : zipSync({ ["fixture/20260908154051-h3ysj72.sy"]: strToU8(JSON.stringify({ID:"20260908154051-h3ysj72",Type:"NodeDocument",Children:[]})) })); return ok(""); }
     if (args.includes("rename")) title = args[args.indexOf("--title") + 1];
     if (args.includes("get")) return ok({ id, ial: { title } });
     if (args.includes("update")) rows.find((r) => r.id === id)!.markdown = args[args.indexOf("--data") + 1];
@@ -49,12 +48,6 @@ async function fixture(options: { dangerous?: boolean; readonly?: boolean; fail?
 }
 
 describe("write boundaries", () => {
-  it.each(["siyuan_update_block", "siyuan_patch_blocks", "siyuan_replace_document_body", "siyuan_delete_block", "siyuan_remove_document"])("rejects Markdown disguised as native backup before %s", async (name) => {
-    const f = await fixture({ dangerous: true, invalidArchive: true });
-    const args = name === "siyuan_patch_blocks" ? { documentId: DOC, operations: [{op:"append",parent:DOC,markdown:"new"},{op:"delete",id:BLOCK}] } : {id: name === "siyuan_replace_document_body" || name === "siyuan_remove_document" ? DOC : BLOCK, markdown:"new"};
-    expect(await f.call(name,args)).toMatchObject({ok:false,code:"BACKUP_FAILED",execution:"not-started",retryable:false});
-    expect(f.calls.every((args) => args.includes("sql") || args.includes("export"))).toBe(true);
-  });
   it.each(["siyuan_update_block", "siyuan_delete_block", "siyuan_patch_blocks"])("rejects document roots in %s before any mutation", async (name) => {
     const f = await fixture({ dangerous: true });
     const args = name === "siyuan_patch_blocks" ? { documentId: DOC, operations: [{ op: "delete", id: DOC }] } : { id: DOC, markdown: "title" };
@@ -78,32 +71,21 @@ describe("write boundaries", () => {
     expect(await f.call("siyuan_update_block", { id: BLOCK, markdown: "new" })).toMatchObject({ code: "PERMISSION_DENIED", isError: true });
     expect(f.calls).toHaveLength(0);
   });
-  it("gates full replacement even when ordinary writing is enabled", async () => {
-    const f = await fixture();
-    expect(await f.call("siyuan_replace_document_body", { id: DOC, markdown: "new" })).toMatchObject({ code: "PERMISSION_DENIED" });
-    expect(f.calls).toHaveLength(0);
-  });
   it("renames using metadata only, without archive or body readback", async () => {
     const f = await fixture();
     expect(await f.call("siyuan_rename_document", { id: DOC, title: "new" })).toMatchObject({ ok: true, verification: "passed", data: { id: DOC, requiresRefresh: false } });
     expect(f.calls.map((args) => args.slice(4, 6))).toEqual([["sql", expect.any(String)], ["document", "rename"], ["block", "get"]]);
     expect(f.rows.find((r) => r.id === BLOCK)!.markdown).toBe("old");
   });
-  it("backs up a single update once and returns verified identity", async () => {
+  it("updates without export and verifies the target once", async () => {
     const f = await fixture();
-    expect(await f.call("siyuan_update_block", { id: BLOCK, markdown: "new" })).toMatchObject({ ok: true, verification: "passed", recovery: { documentId: DOC }, data: { id: BLOCK, requiresRefresh: false } });
-    expect(f.calls.filter((args) => args.includes("export"))).toHaveLength(1);
+    expect(await f.call("siyuan_update_block", { id: BLOCK, markdown: "new" })).toMatchObject({ ok: true, verification: "passed", data: { id: BLOCK, requiresRefresh: false } });
+    expect(f.calls.filter((args) => args.includes("export"))).toHaveLength(0);
     expect(f.calls.filter((args) => args.includes("kramdown"))).toHaveLength(1);
-    expect(f.calls.findIndex((args) => args.includes("export"))).toBeLessThan(f.calls.findIndex((args) => args.includes("update")));
-  });
-  it("does not modify content if a backup fails", async () => {
-    const f = await fixture({ fail: "export" });
-    expect(await f.call("siyuan_update_block", { id: BLOCK, markdown: "new" })).toMatchObject({ code: "BACKUP_FAILED", execution: "not-started" });
-    expect(f.calls.some((args) => args.includes("update"))).toBe(false);
   });
   it("reports timeouts as unknown without retrying", async () => {
     const f = await fixture({ fail: "update" });
-    expect(await f.call("siyuan_update_block", { id: BLOCK, markdown: "new" })).toMatchObject({ ok: false, execution: "unknown", retryable: false, recovery: { documentId: DOC } });
+    expect(await f.call("siyuan_update_block", { id: BLOCK, markdown: "new" })).toMatchObject({ ok: false, execution: "unknown", retryable: false });
     expect(f.calls.filter((args) => args.includes("update"))).toHaveLength(1);
   });
   it("does not repeat a write when verification fails", async () => {
@@ -131,16 +113,16 @@ describe("write boundaries", () => {
     expect(await f.call("siyuan_patch_blocks", { documentId: DOC, operations: [{ op: "update", id: BLOCK, markdown: "new" }] })).toMatchObject({ code: "TARGET_NOT_FOUND" });
     expect(f.calls).toHaveLength(1);
   });
-  it("merges backup and verification for independent batch updates", async () => {
+  it("merges verification for independent batch updates without export", async () => {
     const f = await fixture();
     expect(await f.call("siyuan_patch_blocks", { documentId: DOC, operations: [{ op: "update", id: BLOCK, markdown: "new" }, { op: "delete", id: OTHER }] })).toMatchObject({ ok: true, verification: "passed", data: { appliedCount: 2, requiresRefresh: false } });
     expect(f.calls.filter((args) => args.includes("sql"))).toHaveLength(2);
-    expect(f.calls.filter((args) => args.includes("export"))).toHaveLength(1);
+    expect(f.calls.filter((args) => args.includes("export"))).toHaveLength(0);
     expect(f.calls.some((args) => args.includes("kramdown"))).toBe(false);
   });
-  it("reports partial progress and recovery when the second batch step fails", async () => {
+  it("reports partial progress when the second batch step fails", async () => {
     const f = await fixture({ fail: "delete" });
-    expect(await f.call("siyuan_patch_blocks", { documentId: DOC, operations: [{ op: "append", parent: DOC, markdown: "new" }, { op: "delete", id: OTHER }] })).toMatchObject({ ok: false, code: "PARTIAL_FAILURE", data: { applied: [expect.any(Object)], requiresRefresh: true }, recovery: { documentId: DOC } });
+    expect(await f.call("siyuan_patch_blocks", { documentId: DOC, operations: [{ op: "append", parent: DOC, markdown: "new" }, { op: "delete", id: OTHER }] })).toMatchObject({ ok: false, code: "PARTIAL_FAILURE", data: { applied: [expect.any(Object)], requiresRefresh: true } });
   });
   it("does not read body or archive for an ordinary append", async () => {
     const f = await fixture();
@@ -150,7 +132,7 @@ describe("write boundaries", () => {
   });
   it("exposes permission-aware capabilities without querying note data", async () => {
     const f = await fixture();
-    expect(await f.call("siyuan_health", {})).toMatchObject({ data: { writeCapabilities: { siyuan_rename_document: { status: "available" }, siyuan_replace_document_body: { status: "permission-denied" } } } });
+    expect(await f.call("siyuan_health", {})).toMatchObject({ data: { writeCapabilities: { siyuan_rename_document: { status: "available" }, siyuan_replace_document_body: { status: "available", requiresUserConfirmation: true, confirmationMethod: "agent-chat", confirmationEnforcedByServer: false } } } });
     expect(f.calls).toHaveLength(0);
   });
   it("does not allow attributes or full storage tools to bypass title/content boundaries", async () => {
@@ -218,25 +200,5 @@ describe("Markdown verification regressions", () => {
     for (const [a, b] of [["```\na  b\n```", "```\na b\n```"], ["a  \nb", "a\nb"], ["[x](https://a.example)", "[x](https://b.example)"], ["- a\n  - b", "- a\n- b"]]) {
       expect(normalizeMarkdown(a)).not.toBe(normalizeMarkdown(b));
     }
-  });
-});
-
-describe("native recovery archive validation", () => {
-  const native = strToU8(JSON.stringify({ID:DOC,Type:"NodeDocument",Children:[]}));
-  it("accepts native document structure in an import directory", () => {
-    expect(() => validateNativeArchive(zipSync({[`notebook/${DOC}.sy`]:native}),DOC)).not.toThrow();
-  });
-  it.each([
-    {[`notebook/${DOC}.sy`]:strToU8("# Markdown")},
-    {[`${DOC}.sy`]:native},
-    {[`../${DOC}.sy`]:native},
-    {[`notebook/${OTHER}.sy`]:native},
-    {[`notebook/${DOC}.sy`]:native,"another/file.txt":strToU8("x")},
-    {"notebook/empty.txt":strToU8("x")}
-  ])("rejects invalid or incomplete native archives", (entries) => {
-    expect(() => validateNativeArchive(zipSync(entries as Record<string,Uint8Array>),DOC)).toThrow();
-  });
-  it("rejects ZIP signature without an archive", () => {
-    expect(() => validateNativeArchive(new Uint8Array([80,75,3,4,...Array(30).fill(0)]),DOC)).toThrow();
   });
 });

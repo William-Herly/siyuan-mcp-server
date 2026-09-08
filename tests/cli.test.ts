@@ -1,4 +1,3 @@
-import { zipSync, strToU8 } from "fflate";
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -390,6 +389,8 @@ describe("server metadata", () => {
 
     expect(SERVER_VERSION).toBe(packageJson.version);
     expect(SERVER_INSTRUCTIONS).toContain("SiYuan/思源笔记");
+    expect(SERVER_INSTRUCTIONS).toContain("MUST ask in chat and WAIT");
+    expect(SERVER_INSTRUCTIONS).toContain("Silence is not approval");
     expect(SERVER_INSTRUCTIONS).toContain("instead of calling the local SiYuan HTTP API directly");
   });
 });
@@ -404,7 +405,6 @@ describe("document body replacement", () => {
       { ...baseConfig, allowWrite: true, allowDangerous: true, toolProfile: "standard", logDir },
       async (_file, args) => {
         if (args.includes("sql")) return { stdout: JSON.stringify([{id:"20260908154051-h3ysj72",root_id:"20260908154051-h3ysj72",parent_id:"",type:"d",markdown:"",ial:"",updated:""}]), stderr:"",exitCode:0,timedOut:false };
-        if (args.includes("export")) { await writeFile(args[args.indexOf("--output")+1], zipSync({ ["fixture/20260908154051-h3ysj72.sy"]: strToU8(JSON.stringify({ID:"20260908154051-h3ysj72",Type:"NodeDocument",Children:[]})) })); return {stdout:"",stderr:"",exitCode:0,timedOut:false}; }
         if (args.includes("kramdown")) return {stdout: markdown,stderr:"",exitCode:0,timedOut:false};
         calls.push(args);
         if (args.includes("children")) {
@@ -458,7 +458,6 @@ describe("document body replacement", () => {
       { ...baseConfig, allowWrite: true, allowDangerous: true, toolProfile: "standard", logDir },
       async (_file, args) => {
         if (args.includes("sql")) return { stdout: JSON.stringify([{id:"20260908154051-h3ysj72",root_id:"20260908154051-h3ysj72",parent_id:"",type:"d",markdown:"",ial:"",updated:""}]), stderr:"",exitCode:0,timedOut:false };
-        if (args.includes("export")) { await writeFile(args[args.indexOf("--output")+1], zipSync({ ["fixture/20260908154051-h3ysj72.sy"]: strToU8(JSON.stringify({ID:"20260908154051-h3ysj72",Type:"NodeDocument",Children:[]})) })); return {stdout:"",stderr:"",exitCode:0,timedOut:false}; }
         if (args.includes("kramdown")) return {stdout: "replacement",stderr:"",exitCode:0,timedOut:false};
         if (args.includes("children")) {
           childrenCall += 1;
@@ -502,7 +501,6 @@ describe("document body replacement", () => {
       { ...baseConfig, allowWrite: true, allowDangerous: true, toolProfile: "standard", logDir },
       async (_file, args) => {
         if (args.includes("sql")) return { stdout: JSON.stringify([{id:"20260908154051-h3ysj72",root_id:"20260908154051-h3ysj72",parent_id:"",type:"d",markdown:"",ial:"",updated:""}]), stderr:"",exitCode:0,timedOut:false };
-        if (args.includes("export")) { await writeFile(args[args.indexOf("--output")+1], zipSync({ ["fixture/20260908154051-h3ysj72.sy"]: strToU8(JSON.stringify({ID:"20260908154051-h3ysj72",Type:"NodeDocument",Children:[]})) })); return {stdout:"",stderr:"",exitCode:0,timedOut:false}; }
         if (args.includes("kramdown")) return {stdout: "replacement",stderr:"",exitCode:0,timedOut:false};
         calls.push(args);
         if (args.includes("children")) {
@@ -543,7 +541,6 @@ describe("document body replacement", () => {
       { ...baseConfig, allowWrite: true, allowDangerous: true, toolProfile: "standard", logDir },
       async (_file, args) => {
         if (args.includes("sql")) return { stdout: JSON.stringify([{id:"20260908154051-h3ysj72",root_id:"20260908154051-h3ysj72",parent_id:"",type:"d",markdown:"",ial:"",updated:""}]), stderr:"",exitCode:0,timedOut:false };
-        if (args.includes("export")) { await writeFile(args[args.indexOf("--output")+1], zipSync({ ["fixture/20260908154051-h3ysj72.sy"]: strToU8(JSON.stringify({ID:"20260908154051-h3ysj72",Type:"NodeDocument",Children:[]})) })); return {stdout:"",stderr:"",exitCode:0,timedOut:false}; }
         if (args.includes("kramdown")) return {stdout: "replacement",stderr:"",exitCode:0,timedOut:false};
         calls.push(args);
         if (args.includes("children")) {

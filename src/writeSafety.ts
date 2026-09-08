@@ -1,12 +1,6 @@
 import MarkdownIt from "markdown-it";
-import { unzipSync, strFromU8 } from "fflate";
-import { randomUUID } from "node:crypto";
-import { mkdir, open } from "node:fs/promises";
-import path from "node:path";
 import type { SiyuanCli } from "./cli.js";
-import type { ServerConfig } from "./config.js";
 import type { NormalizedResponse } from "./types.js";
-import { runAuditedWrite } from "./toolHelpers.js";
 
 export const BLOCK_ID = /^\d{14}-[a-z0-9]{7}$/;
 const CONTENT_TYPES = new Set(["p", "h", "l", "i", "b", "s", "c", "m", "t", "html", "iframe", "widget", "video", "audio", "query_embed", "tb", "av"]);
@@ -73,48 +67,6 @@ export function checkInsertion(targets: Map<string, BlockTarget>, parent: string
       return safetyError(command, "DOCUMENT_SCOPE_MISMATCH", "previous must be an existing direct child of parent in the same document.");
     }
   }
-}
-
-/** One archive per destructive MCP call; no repo key and no whole-workspace checkout. */
-export async function backupDocument(config: ServerConfig, cli: SiyuanCli, documentId: string, command: string): Promise<NormalizedResponse> {
-  const recoveryId = randomUUID();
-  const directory = path.resolve(config.logDir, "recovery");
-  const archive = path.join(directory, `${documentId}-${recoveryId}.sy.zip`);
-  try {
-    await mkdir(directory, { recursive: true });
-    const result = await runAuditedWrite(config, cli, "document_backup", ["export", "sy", "--id", documentId, "--output", archive], { documentId, recoveryId, archive }, false);
-    if (!result.ok) return safetyError(command, "BACKUP_FAILED", "Document backup failed. No content changes were attempted.");
-    const file = await open(archive, "r");
-    try {
-      const size = (await file.stat()).size;
-      if (size <= 22 || size > 128 * 1024 * 1024) throw new Error("Invalid archive size");
-      validateNativeArchive(await file.readFile(), documentId);
-    } finally { await file.close(); }
-    return { ok: true, command, warnings: result.warnings, data: { recoveryId, documentId, archive, format: "sy.zip", automaticRollback: false } };
-  } catch {
-    return safetyError(command, "BACKUP_FAILED", "Could not validate a native SY document backup. Some CLI versions export Markdown with a .sy extension, which cannot restore native documents. No content changes were attempted; do not retry or bypass MCP.");
-  }
-}
-
-/** Structural prerequisite, not a claim of successful restore or atomic snapshot. */
-export function validateNativeArchive(bytes: Uint8Array, documentId: string): void {
-  let total = 0;
-  const roots = new Set<string>();
-  const files = unzipSync(bytes, { filter(entry) {
-    total += entry.originalSize;
-    const parts = entry.name.split("/");
-    if (total > 128 * 1024 * 1024 || entry.name.includes("\\") || parts.some((part) => part === ".." || part === "." || part.includes(":")) || !parts[0] || parts.length < 2) throw new Error("Invalid archive layout");
-    roots.add(parts[0]);
-    return entry.name.endsWith(".sy");
-  } });
-  if (roots.size !== 1) throw new Error("Expected a single native archive directory");
-  let found = false;
-  for (const [name, bytes] of Object.entries(files)) {
-    const document = JSON.parse(strFromU8(bytes));
-    if (!document || document.Type !== "NodeDocument" || !BLOCK_ID.test(document.ID) || path.posix.basename(name) !== `${document.ID}.sy` || !Array.isArray(document.Children)) throw new Error("Invalid native document");
-    if (document.ID === documentId) found = true;
-  }
-  if (!found) throw new Error("Target native document missing");
 }
 
 /** Serializes MCP operations. Other processes/SiYuan UI remain outside this lock. */

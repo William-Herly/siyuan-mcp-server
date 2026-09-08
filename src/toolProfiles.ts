@@ -42,7 +42,8 @@ export function isToolExposed(name: string, profile: ToolProfile): boolean {
 export function writeCapabilities(config: ServerConfig) {
   return Object.fromEntries(STANDARD_WRITE_TOOLS.map((tool) => [tool, {
     status: !isToolExposed(tool, config.toolProfile) ? "unavailable" :
-      (tool === "siyuan_replace_document_body" ? config.allowDangerous : config.allowWrite || config.allowDangerous) ? "available" : "permission-denied",
-    requiredPermission: tool === "siyuan_replace_document_body" ? "dangerous" : "safe-write"
+      (config.allowWrite || config.allowDangerous) ? "available" : "permission-denied",
+    requiredPermission: "safe-write",
+    ...(tool === "siyuan_replace_document_body" ? { requiresUserConfirmation: true, confirmationMethod: "agent-chat", confirmationEnforcedByServer: false } : {})
   }]));
 }
