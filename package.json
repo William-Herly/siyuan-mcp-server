@@ -9,6 +9,7 @@
   "files": [
     "dist",
     "docs",
+    "AGENTS.md",
     "README.md",
     "LICENSE"
   ],
@@ -17,14 +18,16 @@
   },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "tsc -p tsconfig.json",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.check.json",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
     "test": "vitest run",
-    "test:standard": "node scripts/test-standard-integration.mjs",
-    "preversion": "npm test && npm run build",
-    "prepack": "npm run clean && npm run build && npm test",
-    "test:safety": "npm run build && node scripts/test-safety-integration.mjs"
+    "test:standard": "node tests/integration/standard.mjs",
+    "preversion": "npm run typecheck && npm test && npm run build",
+    "prepack": "npm run typecheck && npm run build && npm test",
+    "pack": "node -e \"require('node:fs').mkdirSync('artifacts',{recursive:true})\" && npm pack --ignore-scripts --pack-destination artifacts",
+    "test:safety": "node tests/integration/safety.mjs"
   },
   "repository": {
     "type": "git",

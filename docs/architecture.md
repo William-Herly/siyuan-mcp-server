@@ -14,15 +14,17 @@ MCP schema → profile 过滤 → 串行调度 → 权限与目标检查
 | 文件 | 职责 |
 | --- | --- |
 | src/index.ts、src/serverMetadata.ts | stdio 入口、版本和初始化规则 |
-| src/toolProfiles.ts | 工具暴露集合、核心写能力状态 |
-| src/tools.ts | 过滤注册、串行调度、拒绝审计 |
-| src/readTools.ts | 读取、搜索、health、导出 |
-| src/writeTools.ts | 写入、patch 和全文替换 |
-| src/writeSafety.ts | 目标、类型/归属和验证 |
-| src/databaseTools.ts、src/dangerousTools.ts | 数据库及管理操作 |
-| src/toolHelpers.ts | 注册、权限、审计执行、结果封装 |
-| src/cli.ts、src/argBuilders.ts | CLI 执行、超时、参数与输出 |
-| src/audit.ts | JSONL 日志、正文脱敏 |
+| src/mcp/ | 窄注册接口、SDK 适配、profile 过滤、串行包装、拒绝审计和协议结果 |
+| src/tools/ | 读取、写入、数据库、管理工具的描述、schema 和处理入口 |
+| src/operations/ | 文档读取兼容、块写入、patch、全文替换和受权限控制的通用写入 |
+| src/safety/ | 权限、目标类型/归属、插入位置和写后验证 |
+| src/markdown/ | 无 I/O 的 Markdown 校验、单块判断与内容规范化 |
+| src/cli/ | CLI 子进程执行、超时、输出解析、参数、路径与 SQL 校验 |
+| src/runtime/ | JSONL 审计、正文脱敏、审计写入执行与进程内串行队列 |
+
+工具模块只依赖 `ToolRegistrar` 的注册能力；`createToolRegistrar` 在入口连接真实 MCP SDK，测试可以注入模拟注册器。SDK 的兼容类型适配集中在此边界，不再把部分对象断言为完整服务端。
+
+主要依赖方向为 `mcp/registerTools → tools → operations → CLI/校验`。操作结果使用 `NormalizedResponse`，在 MCP 层转换为协议结果。参数构造和 Markdown 处理不依赖 MCP SDK；串行队列独立于目标校验。工具入口可直接组合小型操作，复杂批次和全文替换由专用流程模块维护。
 
 ## 权限与发现
 
@@ -32,7 +34,7 @@ minimal 默认只读；standard 提供日常工具和重命名；full 提供管�
 
 ## 目标检查与调度
 
-writeSafety 仅构造固定 SELECT，严格校验 ID 后拼接值。使用 blocks 表的 d、p 等类型，未知类型拒绝；CLI block get 的 NodeDocument 不会被当作普通内容块。
+`safety/targets.ts` 仅构造固定 SELECT，严格校验 ID 后拼接值。使用 blocks 表的 d、p 等类型，未知类型拒绝；CLI block get 的 NodeDocument 不会被当作普通内容块。
 
 单操作查询目标；patch 一次查询文档关系元数据，确认归属、parent/previous、重复破坏性目标和祖先冲突。关系查询不读取整篇 Markdown。标题区段破坏性操作单独执行。append/insert 支持多块内容，update 只允许单块。
 

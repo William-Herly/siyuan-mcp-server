@@ -1,4 +1,4 @@
-import { appendNumber, appendRepeated } from "./toolHelpers.js";
+import { validateWritableMarkdown } from "../markdown/validate.js";
 
 export function buildSearchArgs(args: {
   query: string;
@@ -227,4 +227,42 @@ export function buildRepoListArgs(args: {
     cliArgs.push("--page", String(args.page));
   }
   return cliArgs;
+}
+
+export function appendNumber(target: string[], flag: string, value: number | undefined): void {
+  if (value !== undefined) {
+    target.push(flag, String(value));
+  }
+}
+
+export function appendRepeated(target: string[], flag: string, values: string[] | undefined): void {
+  for (const value of values ?? []) {
+    target.push(flag, value);
+  }
+}
+
+export function withDryRun(args: string[], dryRun: boolean): string[] {
+  return dryRun ? ["--dry-run", ...args] : args;
+}
+
+export function buildImportArgs(
+  kind: "md" | "sy",
+  args: { file: string; notebook: string; path?: string; hpath?: string }
+): string[] {
+  const cliArgs = ["import", kind, "--file", args.file, "--notebook", args.notebook];
+  if (args.path) {
+    cliArgs.push("--path", args.path);
+  }
+  if (args.hpath) {
+    cliArgs.push("--hpath", args.hpath);
+  }
+  return cliArgs;
+}
+
+export function blockContentArgs(markdown: string):
+  | { args: string[] }
+  | { error: { ok: false; warnings: string[]; command: string } } {
+  const issues = validateWritableMarkdown(markdown);
+  if (!markdown || issues.length) return { error: { ok: false, command: "block_content", warnings: issues.length ? issues : ["Markdown must not be empty."] } };
+  return { args: ["--data", markdown] };
 }

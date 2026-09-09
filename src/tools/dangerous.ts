@@ -1,14 +1,18 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod/v4";
-import type { ServerConfig } from "./config.js";
-import { SiyuanCli } from "./cli.js";
-import { readTargets, requireTarget } from "./writeSafety.js";
-import { normalizeDataRelativeAssetPath, registerCliTool, requireDangerous, runAuditedWrite, withDryRun } from "./toolHelpers.js";
+import { withDryRun } from "../cli/args.js";
+import { SiyuanCli } from "../cli/client.js";
+import { normalizeDataRelativeAssetPath } from "../cli/paths.js";
+import { ServerConfig } from "../config.js";
+import type { ToolRegistrar } from "../mcp/register.js";
+import { registerCliTool } from "../mcp/register.js";
+import { runAuditedWrite } from "../runtime/audit.js";
+import { requireDangerous } from "../safety/permissions.js";
+import { readTargets, requireTarget } from "../safety/targets.js";
 
 /**
  * Registers destructive tools behind the explicit dangerous permission gate.
  */
-export function registerDangerousTools(server: McpServer, config: ServerConfig, cli: SiyuanCli): void {
+export function registerDangerousTools(server: ToolRegistrar, config: ServerConfig, cli: SiyuanCli): void {
   const dangerous = (
     name: string,
     command: string,

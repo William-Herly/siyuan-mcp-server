@@ -1,3 +1,4 @@
+import { requireVerifiedIntegrationIsolation } from "./isolation.mjs";
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -5,9 +6,11 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
+requireVerifiedIntegrationIsolation();
+
 assert.ok(process.env.SIYUAN_TEST_WORKSPACE, "Set SIYUAN_TEST_WORKSPACE to an isolated test workspace; no default workspace is allowed.");
 assert.ok(process.env.SIYUAN_TEST_NOTEBOOK_ID, "Set SIYUAN_TEST_NOTEBOOK_ID explicitly; no automatic notebook selection is allowed.");
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const packageJson = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
 const packageVersion = packageJson.version;
 assert.equal(typeof packageVersion, "string", "package.json version must be a string");

@@ -1,4 +1,4 @@
-import type { ServerConfig, ToolProfile } from "./config.js";
+import { ServerConfig, ToolProfile } from "../config.js";
 
 const MINIMAL_TOOLS = new Set([
   "siyuan_health",

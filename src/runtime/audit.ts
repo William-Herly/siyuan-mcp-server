@@ -1,8 +1,9 @@
-import { mkdir, appendFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
-import type { ServerConfig } from "./config.js";
-import type { NormalizedResponse } from "./types.js";
+import { SiyuanCli } from "../cli/client.js";
+import { ServerConfig } from "../config.js";
+import { NormalizedResponse } from "../types.js";
 
 export interface WriteAuditEntry {
   timestamp: string;
@@ -61,4 +62,32 @@ function sanitizeValue(value: unknown, key?: string): unknown {
   }
 
   return value;
+}
+
+/**
+ * Runs a write-like command and appends a compact audit record. Dry-run output is text by design.
+ */
+export async function runAuditedWrite(
+  config: ServerConfig,
+  cli: SiyuanCli,
+  command: string,
+  args: string[],
+  input: Record<string, unknown>,
+  dryRun: boolean | undefined
+): Promise<NormalizedResponse> {
+  const effectiveDryRun = dryRun === true;
+  try {
+    await auditWrite(config, command, { ...input, auditPhase: "intent" }, effectiveDryRun, { ok: true, command, warnings: [] });
+  } catch {
+    return { ok: false, command, code: "AUDIT_UNAVAILABLE", execution: "not-started", retryable: false, warnings: ["Could not record write intent. No command was executed."] };
+  }
+  const result = await cli.run(command, args, effectiveDryRun ? { output: "text" } : {});
+  const outcome = { ...result, execution: effectiveDryRun ? "not-started" : result.ok ? "applied" : "unknown", verification: "not-required", retryable: false,
+    ...(!result.ok ? { code: "WRITE_STATE_UNKNOWN" } : {}) };
+  try {
+    await auditWrite(config, command, { ...input, auditPhase: "result" }, effectiveDryRun, outcome);
+    return outcome;
+  } catch {
+    return { ...outcome, audit: "failed", warnings: [...result.warnings, "The command already ran, but its audit result could not be saved. Do not repeat the write solely because logging failed."] };
+  }
 }

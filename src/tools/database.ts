@@ -1,14 +1,16 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod/v4";
-import { buildDatabaseItemAddArgs, buildDatabaseItemUpdateArgs, buildDatabaseRenderArgs } from "./argBuilders.js";
-import { SiyuanCli } from "./cli.js";
-import type { ServerConfig } from "./config.js";
-import { registerCliTool, requireWrite, runAuditedWrite, withDryRun } from "./toolHelpers.js";
+import { buildDatabaseItemAddArgs, buildDatabaseItemUpdateArgs, buildDatabaseRenderArgs, withDryRun } from "../cli/args.js";
+import { SiyuanCli } from "../cli/client.js";
+import { ServerConfig } from "../config.js";
+import type { ToolRegistrar } from "../mcp/register.js";
+import { registerCliTool } from "../mcp/register.js";
+import { runAuditedWrite } from "../runtime/audit.js";
+import { requireWrite } from "../safety/permissions.js";
 
 /**
  * Registers database read tools and safe-write database row/cell operations.
  */
-export function registerDatabaseTools(server: McpServer, config: ServerConfig, cli: SiyuanCli): void {
+export function registerDatabaseTools(server: ToolRegistrar, config: ServerConfig, cli: SiyuanCli): void {
   registerCliTool(
     server,
     "siyuan_database_search",

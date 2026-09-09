@@ -1,14 +1,14 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod/v4";
-import { SiyuanCli } from "../src/cli.js";
-import { registerTools } from "../src/tools.js";
-import { normalizeMarkdown } from "../src/writeSafety.js";
-import { runAuditedWrite } from "../src/toolHelpers.js";
-import type { ServerConfig } from "../src/config.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { SiyuanCli } from "../../src/cli/client.js";
+import { type ServerConfig } from "../../src/config.js";
+import { normalizeMarkdown } from "../../src/markdown/normalize.js";
+import { registerTools } from "../../src/mcp/registerTools.js";
+import { runAuditedWrite } from "../../src/runtime/audit.js";
 
 const DOC = "20260908154051-h3ysj72", BLOCK = "20260908154051-8wu6gis", CHILD = "20260908154051-childaa", OTHER = "20260908154051-otheraa";
 const row = (id: string, root_id = DOC, parent_id = DOC, type = "p", markdown = "old") => ({ id, root_id, parent_id, type, markdown, ial: "", updated: "" });

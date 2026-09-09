@@ -1,8 +1,8 @@
-import MarkdownIt from "markdown-it";
-import type { SiyuanCli } from "./cli.js";
-import type { NormalizedResponse } from "./types.js";
+import { SiyuanCli } from "../cli/client.js";
+import { NormalizedResponse } from "../types.js";
 
 export const BLOCK_ID = /^\d{14}-[a-z0-9]{7}$/;
+
 const CONTENT_TYPES = new Set(["p", "h", "l", "i", "b", "s", "c", "m", "t", "html", "iframe", "widget", "video", "audio", "query_embed", "tb", "av"]);
 
 export interface BlockTarget {
@@ -67,68 +67,4 @@ export function checkInsertion(targets: Map<string, BlockTarget>, parent: string
       return safetyError(command, "DOCUMENT_SCOPE_MISMATCH", "previous must be an existing direct child of parent in the same document.");
     }
   }
-}
-
-/** Serializes MCP operations. Other processes/SiYuan UI remain outside this lock. */
-let operationQueue: Promise<unknown> = Promise.resolve();
-export function serializeOperation<T>(action: () => Promise<T>): Promise<T> {
-  const result = operationQueue.then(action, action);
-  operationQueue = result.catch(() => undefined);
-  return result;
-}
-
-const markdownParser = new MarkdownIt({ html: true, linkify: false, typographer: false });
-type MarkdownToken = ReturnType<typeof markdownParser.parse>[number];
-
-/** Compare parsed content, not serializer spacing; never modify the stored Markdown. */
-export function normalizeMarkdown(value: string): string {
-  const source = value.replace(/\r\n/g, "\n");
-  const protectedLines = new Set<number>();
-  for (const token of markdownParser.parse(source, {})) {
-    if (token.map && (["fence", "code_block", "html_block"].includes(token.type) || token.children?.some((child) => child.type === "code_inline"))) {
-      for (let line = token.map[0]; line < token.map[1]; line += 1) protectedLines.add(line);
-    }
-  }
-  // Remove block IAL before table parsing, where it otherwise becomes a spurious table row.
-  const withoutBlockAttrs = source.split("\n").map((line, index) => {
-    const attribute = line.match(/^(\s*(?:>\s*)*)\{:\s+id="\d{14}-[a-z0-9]{7}"[^\r\n]*\}\s*$/);
-    return !protectedLines.has(index) && attribute ? attribute[1].trimEnd() : line;
-  }).join("\n");
-  return JSON.stringify(canonicalTokens(markdownParser.parse(withoutBlockAttrs, {})));
-}
-
-function canonicalTokens(tokens: MarkdownToken[], inline = false): unknown[] {
-  const output: { type: string; tag: string; nesting: number; attrs: unknown; content: string; info: string; children: unknown[] | null }[] = [];
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index];
-    let content = token.content;
-    // Only text at a block/line start can be generated IAL. Code, HTML and link labels stay literal.
-    if (inline && token.type === "text" && (index === 0 || tokens[index - 1].type === "softbreak")) {
-      content = content.replace(/^\{:\s+id="\d{14}-[a-z0-9]{7}"[^\r\n]*?\}/, "");
-      if (!content) {
-        if (output.at(-1)?.type === "softbreak") output.pop();
-        continue;
-      }
-    }
-    const children = token.children ? canonicalTokens(token.children, true) : null;
-    if (token.type === "inline" && children?.length === 0 && output.at(-1)?.type === "paragraph_open" && tokens[index + 1]?.type === "paragraph_close") {
-      output.pop(); index += 1; continue;
-    }
-    // map, markup, level and hidden encode source formatting, including tight/loose lists.
-    output.push({ type: token.type, tag: token.tag, nesting: token.nesting, attrs: token.attrs,
-      content: token.type === "inline" ? "" : content, info: token.info, children });
-  }
-  return output;
-}
-
-export async function verifyMarkdown(cli: SiyuanCli, id: string, markdown: string, result: NormalizedResponse): Promise<NormalizedResponse> {
-  if (!result.ok) return result;
-  const read = await cli.run("write_verify", ["block", "kramdown", "--id", id, "--mode", "md"], { output: "text" });
-  const passed = read.ok && typeof read.data === "string" && normalizeMarkdown(read.data) === normalizeMarkdown(markdown);
-  return {
-    ...result, ok: passed, execution: "applied", verification: passed ? "passed" : read.ok ? "failed" : "unknown",
-    ...(passed ? {} : { code: "VERIFICATION_FAILED", retryable: false }),
-    warnings: [...result.warnings, ...(passed ? [] : ["Write completed, but its content could not be verified (Markdown normalization may differ). Do not blindly retry; inspect the affected scope."])],
-    data: { ...(typeof result.data === "object" && result.data !== null && !Array.isArray(result.data) ? result.data : { result: result.data }), id, requiresRefresh: !passed }
-  };
 }

@@ -1,30 +1,23 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod/v4";
-import type { ServerConfig } from "./config.js";
-import { writeCapabilities } from "./toolProfiles.js";
-import { publicConfigSummary, validateConfig } from "./config.js";
-import { SiyuanCli } from "./cli.js";
-import { ensureLimit, validateSelectSql } from "./sql.js";
-import { buildBatchKramdownArgs, buildDocumentListArgs, buildHistoryListArgs, buildHistorySearchArgs, buildRepoListArgs, buildSearchArgs } from "./argBuilders.js";
-import {
-  appendNumber,
-  documentKramdownWithAssets,
-  documentInfoWithFallback,
-  normalizeDataRelativeAssetPath,
-  normalizeWorkspacePath,
-  outlineWithEmptyFallback,
-  registerCliTool,
-  requireWrite,
-  runAuditedWrite,
-  textResult
-} from "./toolHelpers.js";
+import { appendNumber, buildBatchKramdownArgs, buildDocumentListArgs, buildHistoryListArgs, buildHistorySearchArgs, buildRepoListArgs, buildSearchArgs } from "../cli/args.js";
+import { SiyuanCli } from "../cli/client.js";
+import { normalizeDataRelativeAssetPath, normalizeWorkspacePath } from "../cli/paths.js";
+import { ensureLimit, validateSelectSql } from "../cli/sql.js";
+import { ServerConfig, publicConfigSummary, validateConfig } from "../config.js";
+import { writeCapabilities } from "../mcp/profiles.js";
+import type { ToolRegistrar } from "../mcp/register.js";
+import { registerCliTool } from "../mcp/register.js";
+import { textResult } from "../mcp/results.js";
+import { documentInfoWithFallback, documentKramdownWithAssets, outlineWithEmptyFallback } from "../operations/readDocument.js";
+import { runAuditedWrite } from "../runtime/audit.js";
+import { requireWrite } from "../safety/permissions.js";
 
 const optionalStringArray = z.array(z.string().min(1)).optional();
 
 /**
  * Registers health, workspace, search, document, block, ref, tag, and bookmark read-only tools.
  */
-export function registerReadTools(server: McpServer, config: ServerConfig, cli: SiyuanCli): void {
+export function registerReadTools(server: ToolRegistrar, config: ServerConfig, cli: SiyuanCli): void {
   server.registerTool(
     "siyuan_health",
     {

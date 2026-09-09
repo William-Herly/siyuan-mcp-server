@@ -1,3 +1,4 @@
+import { requireVerifiedIntegrationIsolation } from "./isolation.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -7,10 +8,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { normalizeMarkdown } from "../dist/writeSafety.js";
 
-// Boots only a newly created disposable workspace. All data operations go through MCP.
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+requireVerifiedIntegrationIsolation();
+
+const { normalizeMarkdown } = await import("../../dist/markdown/normalize.js");
+
+// A disposable workspace does not isolate shared startup configuration.
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const workspace = await mkdtemp(path.join(tmpdir(), "siyuan-mcp-validation-"));
 const logDir = path.join(workspace, "mcp-logs");
 const report = { startedAt: new Date().toISOString(), workspace, logDir, cases: [], calls: [], limits: ["Does not test host isolation or production writes", "No automatic rollback or conditional version writes"] };

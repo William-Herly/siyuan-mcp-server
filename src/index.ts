@@ -2,8 +2,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { loadConfig } from "./config.js";
+import { createToolRegistrar } from "./mcp/register.js";
+import { registerTools } from "./mcp/registerTools.js";
 import { SERVER_INSTRUCTIONS, SERVER_VERSION } from "./serverMetadata.js";
-import { registerTools } from "./tools.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -17,7 +18,7 @@ async function main(): Promise<void> {
     }
   );
 
-  registerTools(server, config);
+  registerTools(createToolRegistrar(server), config);
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

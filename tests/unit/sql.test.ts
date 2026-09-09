@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ensureLimit, validateSelectSql } from "../src/sql.js";
+import { ensureLimit, validateSelectSql } from "../../src/cli/sql.js";
 
 describe("validateSelectSql", () => {
   it("accepts SELECT statements", () => {

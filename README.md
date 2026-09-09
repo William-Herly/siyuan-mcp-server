@@ -201,7 +201,7 @@ Windows JSON 路径建议使用正斜杠。
 
 - 标准配置提供专用重命名；普通块更新、删除拒绝文档根。
 - 创建、追加和插入不强制全文回读；重命名仅确认标题元数据。
-- 写入不再自动导出或创建 MCP 备份，也不提供自动回滚；保留目标、权限、批次检查和写后验证。详见[验证报告](docs/validation-2026-09-08.md)。
+- 写入不再自动导出或创建 MCP 备份，也不提供自动回滚；保留目标、权限、批次检查和写后验证。详见[写入保护](docs/safety.md)。
 - patch 必须指定 documentId，预先拒绝跨文档和相互依赖的破坏性操作。
 - 更新只验证目标块，patch 合并验证，全文替换内部验证一次；信息足够时 requiresRefresh=false，不要求 Agent 重读。
 - 全文替换要求 Agent 在聊天中说明目标、完整内容和影响，询问并等待本次明确确认后再调用；服务端不核验聊天确认，不弹窗。需要普通写入权限，仍是非事务性操作；失败返回进度和执行状态，不自动回滚。
@@ -246,25 +246,32 @@ npm test
 npm run dev
 ```
 
-在独立测试笔记本中运行 `standard` 集成测试：
+真实 SiYuan 集成测试目前禁用：临时工作空间不能隔离 CLI 对当前用户全局启动配置的修改。需验证独立 OS 用户或虚拟机隔离后再恢复。日常检查使用 `npm run typecheck`、`npm test` 和 `npm run build`；详情见[测试指南](docs/testing.md)。
 
-```powershell
-$env:SIYUAN_TEST_WORKSPACE = "C:/SiYuan-MCP-Disposable-Test"
-$env:SIYUAN_TEST_NOTEBOOK_ID = "notebook-id"
-npm run test:standard
-```
-
-集成测试会创建测试文档并向日记追加唯一标记，不应在重要笔记本中运行。详细说明见[测试指南](docs/testing.md)。
+本地发布包使用 `npm run pack`，输出到 `artifacts/`。构建、打包及目录约定见[开发指南](docs/development.md)。
 
 ## 项目结构
 
 ```text
-src/        MCP Server、工具注册、CLI 封装和审计
-tests/      单元测试
-scripts/    启动脚本和 standard 集成测试
-docs/       面向用户与开发者的公开文档
-notes/      本地开发过程记录，不提交到 Git
-dist/       TypeScript 构建输出，不提交到 Git
+src/
+  mcp/          工具注册接口、profile 与协议结果
+  tools/        工具描述、schema 与处理入口
+  operations/   文档、块与批次执行流程
+  safety/       权限、目标检查与写后验证
+  markdown/     内容校验与规范化
+  cli/          子进程执行、参数与路径
+  runtime/      审计与进程内串行队列
+tests/
+  unit/         纯函数与模拟 CLI 测试
+  behavior/     工具行为及内存 MCP 协议测试
+  helpers/      共用测试配置与注册辅助
+  integration/  真实 CLI 测试与隔离门禁（当前禁用）
+scripts/        本地开发启动脚本
+docs/           使用、架构、开发与测试指南
+notes/          本地过程记录；testing/ 存放测试结论，不提交到 Git
+dist/           编译输出；每次 build 清理重建
+artifacts/      tgz 发布包，不提交到 Git
+.siyuan-mcp/    本地运行日志、原始测试报告，不提交到 Git
 ```
 
 ## 文档与支持
@@ -273,13 +280,15 @@ dist/       TypeScript 构建输出，不提交到 Git
 - [架构设计](docs/architecture.md)
 - [写入保护与能力边界](docs/safety.md)
 - [测试指南](docs/testing.md)
+- [开发与打包](docs/development.md)
 - [问题反馈](https://github.com/William-Herly/siyuan-mcp-server/issues)
 
 ## 贡献
 
-欢迎提交缺陷修复、兼容性改进、测试和文档修改。较大的工具范围或写入语义变更建议先创建 Issue 说明使用场景。提交代码前至少运行：
+欢迎提交缺陷修复、兼容性改进、测试和文档修改。请先阅读[开源维护原则](docs/development.md#开源维护原则)；Agent 参与维护时遵循根目录 [AGENTS.md](AGENTS.md)。较大的工具范围或写入语义变更建议先创建 Issue 说明使用场景。提交代码前至少运行：
 
 ```bash
+npm run typecheck
 npm run build
 npm test
 ```

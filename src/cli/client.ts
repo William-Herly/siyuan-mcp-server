@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
-import type { CliExecutionResult, NormalizedResponse } from "./types.js";
-import type { ServerConfig } from "./config.js";
+import { ServerConfig } from "../config.js";
+import { CliExecutionResult, NormalizedResponse } from "../types.js";
 
 export type CliExecutor = (file: string, args: string[], timeoutMs: number) => Promise<CliExecutionResult>;
+
 export type CliOutputMode = "json" | "text";
 
 export interface CliRunOptions {
