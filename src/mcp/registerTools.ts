@@ -39,7 +39,7 @@ function filterServerForProfile(server: ToolRegistrar, config: ServerConfig): To
       server.registerTool(name, definition, (input) => serializeOperation(async () => {
         const result = await handler(input);
         const response = result.structuredContent;
-        if (response?.ok === false && response.execution === "not-started" && response.code !== "AUDIT_UNAVAILABLE") {
+        if (response?.ok === false && response.execution === "not-started" && response.code !== "AUDIT_UNAVAILABLE" && typeof response.requestId !== "string") {
           try {
             await auditWrite(config, String(response.command), { ...input, auditPhase: "rejected" }, false, response as NormalizedResponse);
           } catch {

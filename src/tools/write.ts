@@ -12,8 +12,8 @@ import { replaceDocumentBodyDirectly } from "../operations/replaceDocumentBody.j
 import { updateBlockDirectly, writeBlockChild } from "../operations/writeBlock.js";
 import { runAuditedWrite } from "../runtime/audit.js";
 import { requireWrite } from "../safety/permissions.js";
-import { checkInsertion, readTargets, requireTarget, safetyError } from "../safety/targets.js";
-import { patchOperationSchema, writableMarkdownSchema } from "./schemas.js";
+import { resolveInsertion, readTargets, requireTarget, safetyError } from "../safety/targets.js";
+import { parentBlockSchema, previousBlockSchema, patchOperationSchema, writableMarkdownSchema } from "./schemas.js";
 
 /**
  * Registers safe-write tools for snapshots, append/prepend/insert, document creation, updates, and attrs.
@@ -134,9 +134,9 @@ export function registerWriteTools(server: ToolRegistrar, config: ServerConfig, 
   registerCliTool(
     server,
     "siyuan_append_block",
-    "Appends markdown under a parent block. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
+    "Appends markdown to a container. A heading or paragraph cannot receive children; use insert with a previous anchor for a heading section. Returns createdId when the CLI supplies one; no readback is needed just to locate it. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
     {
-      parent: z.string().min(1),
+      parent: parentBlockSchema(),
       markdown: writableMarkdownSchema()
     },
     async ({ parent, markdown }) => writeBlockChild(config, cli, "block_append", "append", parent, markdown, false)
@@ -145,9 +145,9 @@ export function registerWriteTools(server: ToolRegistrar, config: ServerConfig, 
   registerCliTool(
     server,
     "siyuan_prepend_block",
-    "Prepends markdown under a parent block. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
+    "Prepends markdown to a container, not to a heading or paragraph. Returns createdId when supplied by the CLI. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
     {
-      parent: z.string().min(1),
+      parent: parentBlockSchema(),
       markdown: writableMarkdownSchema(),
       dryRun: z.boolean().default(false)
     },
@@ -367,11 +367,11 @@ export function registerWriteTools(server: ToolRegistrar, config: ServerConfig, 
   registerCliTool(
     server,
     "siyuan_insert_block",
-    "Inserts markdown under a parent block, optionally after a previous sibling. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
+    "Inserts markdown into a container, optionally after previous. Heading children describe a section, not physical nesting: to insert below a heading, pass the container as parent and the heading or a known section block as previous. The anchor's immediate section heading is accepted as a legacy parent and resolved internally. Returns createdId when supplied by the CLI. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
     {
-      parent: z.string().min(1),
+      parent: parentBlockSchema(),
       markdown: writableMarkdownSchema(),
-      previous: z.string().min(1).optional()
+      previous: previousBlockSchema()
     },
     async ({ parent, markdown, previous }) => {
       const permission = requireWrite(config, "block_insert");
@@ -383,16 +383,16 @@ export function registerWriteTools(server: ToolRegistrar, config: ServerConfig, 
         return content.error;
       }
 
-      const targets = await readTargets(cli, [parent, ...(previous ? [previous] : [])], "block_insert");
+      const targets = await readTargets(cli, [parent, ...(previous ? [previous] : [])], "block_insert", undefined, false, Boolean(previous));
       if (!(targets instanceof Map)) return targets;
-      const invalidTarget = checkInsertion(targets, parent, previous, "block_insert");
-      if (invalidTarget) return invalidTarget;
+      const location = resolveInsertion(targets, parent, previous, "block_insert");
+      if ("ok" in location) return location;
       return runAuditedWrite(
         config,
         cli,
         "block_insert",
-        ["block", "insert", "--parent", parent, ...content.args, ...(previous ? ["--previous", previous] : [])],
-        { parent, markdown, previous, dryRun: false },
+        ["block", "insert", "--parent", location.parent, ...content.args, ...(previous ? ["--previous", previous] : [])],
+        { parent, resolvedParent: location.parent, markdown, previous, dryRun: false },
         false
       );
     }
@@ -543,10 +543,25 @@ export function registerWriteTools(server: ToolRegistrar, config: ServerConfig, 
   registerCliTool(
     server,
     "siyuan_move_block",
-    "Moves a block under another parent, optionally after a previous sibling. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
-    { id: z.string().min(1), parent: z.string().min(1), previous: z.string().min(1).optional(), dryRun: z.boolean().default(false) },
+    "Moves a content block to a container or after an anchor. Document roots, descendant destinations and invalid container/anchor relationships are rejected. Requires SIYUAN_MCP_ALLOW_WRITE=true.",
+    { id: z.string().min(1), parent: parentBlockSchema(), previous: previousBlockSchema(), dryRun: z.boolean().default(false) },
     async ({ id, parent, previous, dryRun }) => {
-      const args = ["block", "move", "--id", id, "--parent", parent];
+      const permission = requireWrite(config, "block_move");
+      if (permission) return permission;
+      const targets = await readTargets(cli, [id, parent, ...(previous ? [previous] : [])], "block_move", undefined, false, true);
+      if (!(targets instanceof Map)) return targets;
+      const invalid = requireTarget(targets.get(id)!, "content", "block_move");
+      if (invalid) return invalid;
+      const location = resolveInsertion(targets, parent, previous, "block_move");
+      if ("ok" in location) return location;
+      for (const ref of [parent, ...(previous ? [previous] : [])]) {
+        let current = targets.get(ref);
+        while (current) {
+          if (current.id === id) return safetyError("block_move", "CONFLICTING_OPERATIONS", "A block cannot be moved into, or after, itself or its descendants.", { id, destinationId: ref });
+          current = targets.get(current.parent_id);
+        }
+      }
+      const args = ["block", "move", "--id", id, "--parent", location.parent];
       if (previous) {
         args.push("--previous", previous);
       }

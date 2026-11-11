@@ -10,6 +10,7 @@ requireVerifiedIntegrationIsolation();
 
 assert.ok(process.env.SIYUAN_TEST_WORKSPACE, "Set SIYUAN_TEST_WORKSPACE to an isolated test workspace; no default workspace is allowed.");
 assert.ok(process.env.SIYUAN_TEST_NOTEBOOK_ID, "Set SIYUAN_TEST_NOTEBOOK_ID explicitly; no automatic notebook selection is allowed.");
+assert.ok(process.env.SIYUAN_TEST_HOME_DIR, "Set SIYUAN_TEST_HOME_DIR to the isolated test kernel's configuration home; do not inherit the production home.");
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const packageJson = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
 const packageVersion = packageJson.version;
@@ -57,6 +58,7 @@ const env = Object.fromEntries(Object.entries(process.env).filter((entry) => typ
 env.SIYUAN_MCP_PROFILE = "maintain";
 env.SIYUAN_MCP_ALLOW_WRITE = "true";
 env.SIYUAN_MCP_ALLOW_DANGEROUS = "false";
+env.SIYUAN_MCP_HOME_DIR = process.env.SIYUAN_TEST_HOME_DIR;
 if (process.env.SIYUAN_TEST_WORKSPACE) {
   env.SIYUAN_MCP_WORKSPACE = process.env.SIYUAN_TEST_WORKSPACE;
 }

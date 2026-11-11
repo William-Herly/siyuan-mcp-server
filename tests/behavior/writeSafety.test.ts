@@ -9,16 +9,19 @@ import { type ServerConfig } from "../../src/config.js";
 import { normalizeMarkdown } from "../../src/markdown/normalize.js";
 import { registerTools } from "../../src/mcp/registerTools.js";
 import { runAuditedWrite } from "../../src/runtime/audit.js";
+import { patchBlocksDirectly } from "../../src/operations/patchBlocks.js";
+import { updateBlockDirectly } from "../../src/operations/writeBlock.js";
+import { selectTargetRows } from "../helpers/targets.js";
 
 const DOC = "20260908154051-h3ysj72", BLOCK = "20260908154051-8wu6gis", CHILD = "20260908154051-childaa", OTHER = "20260908154051-otheraa";
 const row = (id: string, root_id = DOC, parent_id = DOC, type = "p", markdown = "old") => ({ id, root_id, parent_id, type, markdown, ial: "", updated: "" });
 const directories: string[] = [];
 afterEach(async () => { for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }); });
 
-async function fixture(options: { dangerous?: boolean; readonly?: boolean; fail?: string; rows?: ReturnType<typeof row>[]; unknownType?: boolean } = {}) {
+async function fixture(options: { dangerous?: boolean; readonly?: boolean; fail?: string; rows?: ReturnType<typeof row>[]; unknownType?: boolean; truncated?: boolean; createdId?: string } = {}) {
   const logDir = await mkdtemp(path.join(tmpdir(), "siyuan-safety-test-")); directories.push(logDir);
   const config: ServerConfig = { workspace: "MOCK", cliPath: "NEVER_EXECUTE", logDir, timeoutMs: 100, allowWrite: !options.readonly, allowDangerous: options.dangerous ?? false, toolProfile: "full" };
-  const rows = options.rows ?? [row(DOC, DOC, "", "d", ""), row(BLOCK), row(CHILD, DOC, BLOCK), row(OTHER)];
+  const rows = options.rows ?? [row(DOC, DOC, "", "d", ""), row(BLOCK, DOC, DOC, "b"), row(CHILD, DOC, BLOCK), row(OTHER)];
   const calls: string[][] = [];
   let title = "old";
   const cli = new SiyuanCli(config, async (_file, args) => {
@@ -29,14 +32,15 @@ async function fixture(options: { dangerous?: boolean; readonly?: boolean; fail?
     if (options.fail && args.includes(options.fail)) return { stdout: "", stderr: "injected failure", exitCode: 1, timedOut: options.fail === "update" };
     if (args.includes("sql")) {
       const query = args.at(-1)!;
-      return ok(rows.filter((r) => query.includes("WHERE root_id") ? r.root_id === DOC : query.includes(`'${r.id}'`)).map((r) => options.unknownType ? { ...r, type: "future_type" } : r));
+      return { ...ok(selectTargetRows(query, rows).map((r) => options.unknownType ? { ...r, type: "future_type" } : r)), stderr: options.truncated ? "Results truncated to 100 rows; use LIMIT and OFFSET to paginate." : "" };
     }
+    if (args.includes("--dry-run")) return ok("[dry-run] Would perform operation");
     if (args.includes("rename")) title = args[args.indexOf("--title") + 1];
     if (args.includes("get")) return ok({ id, ial: { title } });
     if (args.includes("update")) rows.find((r) => r.id === id)!.markdown = args[args.indexOf("--data") + 1];
     if (args.includes("delete")) rows.splice(rows.findIndex((r) => r.id === id), 1);
     if (args.includes("kramdown")) return ok(rows.find((r) => r.id === id)?.markdown ?? "");
-    return ok("ok");
+    return ok(options.createdId ? { id: options.createdId } : "ok");
   });
   const tools = new Map<string, { inputSchema: Record<string, z.ZodType>; handler: (args: unknown) => Promise<CallToolResult> }>();
   registerTools({ registerTool(name: string, meta: { inputSchema?: Record<string, z.ZodType> }, handler: (args: unknown) => Promise<CallToolResult>) { tools.set(name, { inputSchema: meta.inputSchema ?? {}, handler }); } } as never, config, cli);
@@ -129,6 +133,85 @@ describe("write boundaries", () => {
     expect(await f.call("siyuan_append_block", { parent: DOC, markdown: "new" })).toMatchObject({ ok: true });
     expect(f.calls).toHaveLength(2);
     await expect(f.call("siyuan_append_block", { parent: DOC, file: "unvalidated.md" })).rejects.toThrow();
+  });
+  it.each(["siyuan_append_block", "siyuan_prepend_block", "siyuan_insert_block"])("rejects a leaf parent before %s reaches the CLI", async (name) => {
+    const f = await fixture();
+    expect(await f.call(name, { parent: OTHER, markdown: "new" })).toMatchObject({ code: "TARGET_TYPE_MISMATCH", execution: "not-started", data: { reason: "PARENT_NOT_CONTAINER", providedParentId: OTHER } });
+    expect(f.calls).toHaveLength(1);
+  });
+  it.each([DOC, BLOCK])("resolves physical and legacy heading parents without another lookup: %s", async (parent) => {
+    const f = await fixture({ rows: [row(DOC, DOC, "", "d"), row(BLOCK, DOC, DOC, "h"), row(CHILD, DOC, BLOCK)], createdId: OTHER });
+    expect(await f.call("siyuan_insert_block", { parent, previous: CHILD, markdown: "new" })).toMatchObject({ ok: true, createdId: OTHER });
+    expect(f.calls).toHaveLength(2);
+    const write = f.calls[1];
+    expect(write[write.indexOf("--parent") + 1]).toBe(DOC);
+    expect(write[write.indexOf("--previous") + 1]).toBe(CHILD);
+  });
+  it("inserts just below an empty heading using the heading as anchor", async () => {
+    const f = await fixture({ rows: [row(DOC, DOC, "", "d"), row(BLOCK, DOC, DOC, "h")] });
+    expect(await f.call("siyuan_insert_block", { parent: DOC, previous: BLOCK, markdown: "new" })).toMatchObject({ ok: true });
+    expect(f.calls).toHaveLength(2);
+  });
+  it.each(["20261111120000-itemaaa", CHILD])("resolves nested heading sections inside a list item: %s", async parent => {
+    const list = "20261111120000-listaaa", item = "20261111120000-itemaaa";
+    const f = await fixture({ rows: [row(DOC, DOC, "", "d"), row(list, DOC, DOC, "l"), row(item, DOC, list, "i"), row(BLOCK, DOC, item, "h"), row(CHILD, DOC, BLOCK, "h"), row(OTHER, DOC, CHILD)] });
+    expect(await f.call("siyuan_insert_block", { parent, previous: OTHER, markdown: "new" })).toMatchObject({ ok: true });
+    expect(f.calls).toHaveLength(2);
+    expect(f.calls[1][f.calls[1].indexOf("--parent") + 1]).toBe(item);
+  });
+  it("rejects anchors in another document before insertion", async () => {
+    const f = await fixture({ rows: [row(DOC, DOC, "", "d"), row(OTHER, OTHER, "", "d"), row(CHILD, OTHER, OTHER)] });
+    expect(await f.call("siyuan_insert_block", { parent: DOC, previous: CHILD, markdown: "new" })).toMatchObject({ code: "DOCUMENT_SCOPE_MISMATCH", execution: "not-started", data: { reason: "INVALID_ANCHOR_SCOPE" } });
+    expect(f.calls).toHaveLength(1);
+  });
+  it("reports actual anchor relationships without writing or doing another read", async () => {
+    const f = await fixture();
+    expect(await f.call("siyuan_insert_block", { parent: DOC, previous: CHILD, markdown: "new" })).toMatchObject({ code: "DOCUMENT_SCOPE_MISMATCH", data: { reason: "PARENT_MISMATCH", providedParentId: DOC, anchorSemanticParentId: BLOCK, anchorContainerId: BLOCK, previousId: CHILD } });
+    expect(f.calls).toHaveLength(1);
+  });
+  it("normalizes a heading parent inside patch and returns its created block ID", async () => {
+    const f = await fixture({ rows: [row(DOC, DOC, "", "d"), row(BLOCK, DOC, DOC, "h"), row(CHILD, DOC, BLOCK)], createdId: OTHER });
+    expect(await f.call("siyuan_patch_blocks", { documentId: DOC, operations: [{ op: "insert", parent: BLOCK, previous: CHILD, markdown: "new" }] })).toMatchObject({ ok: true, data: { applied: [{ id: OTHER }] } });
+    expect(f.calls).toHaveLength(2);
+    expect(f.calls[1][f.calls[1].indexOf("--parent") + 1]).toBe(DOC);
+  });
+  it("does not query unrelated content or reject a large document containing unknown types", async () => {
+    const f = await fixture({ rows: [row(DOC, DOC, "", "d"), ...Array.from({ length: 300 }, (_, index) => row(`20261111120000-${index.toString(36).padStart(7, "0")}`, DOC, DOC, "future_type")), row(BLOCK)] });
+    expect(await f.call("siyuan_patch_blocks", { documentId: DOC, operations: [{ op: "update", id: BLOCK, markdown: "new" }] })).toMatchObject({ ok: true, verification: "passed" });
+    expect(f.calls).toHaveLength(3);
+    expect(f.calls[0]).toContain("--limit");
+    expect(f.calls[0].at(-1)).toContain("WITH RECURSIVE");
+    expect(f.calls[0].at(-1)).not.toContain("WHERE root_id");
+  });
+  it("rejects truncated metadata and missing ancestors before the first mutation", async () => {
+    const truncated = await fixture({ truncated: true });
+    expect(await truncated.call("siyuan_patch_blocks", { documentId: DOC, operations: [{ op: "delete", id: OTHER }] })).toMatchObject({ code: "TARGET_LOOKUP_INCOMPLETE", data: { reason: "TRUNCATED" } });
+    const missing = await fixture({ rows: [row(DOC, DOC, "", "d"), row(CHILD, DOC, BLOCK)] });
+    expect(await missing.call("siyuan_patch_blocks", { documentId: DOC, operations: [{ op: "update", id: CHILD, markdown: "new" }] })).toMatchObject({ code: "TARGET_LOOKUP_INCOMPLETE", data: { reason: "MISSING_ANCESTOR" } });
+    expect(truncated.calls).toHaveLength(1);
+    expect(missing.calls).toHaveLength(1);
+  });
+  it.each(["custom", "callout", "tabs", "tab", "mindmap", "mindmap_item"])("recognizes the current CLI content type %s", async (type) => {
+    const f = await fixture({ rows: [row(DOC, DOC, "", "d"), row(BLOCK, DOC, DOC, type)] });
+    expect(await f.call("siyuan_update_block", { id: BLOCK, markdown: "new" })).toMatchObject({ ok: true, verification: "passed" });
+  });
+  it.each(["    const x = 1;\n", "\tconst x = 1;\r\n", "first  \nsecond\n", "```\n  code  \n```\n"])("preserves Markdown whitespace through write verification: %j", async (markdown) => {
+    const f = await fixture();
+    expect(await f.call("siyuan_update_block", { id: OTHER, markdown })).toMatchObject({ ok: true, verification: "passed", data: { requiresRefresh: false } });
+    expect(f.calls.filter(args => args.includes("kramdown"))).toHaveLength(1);
+  });
+  it("keeps internal dry-run from verifying or reporting applied changes", async () => {
+    const f = await fixture();
+    expect(await updateBlockDirectly(f.config, f.cli, OTHER, "new", true)).toMatchObject({ ok: true, execution: "not-started", verification: "not-required" });
+    expect(await patchBlocksDirectly(f.config, f.cli, DOC, [{ op: "update", id: OTHER, markdown: "new" }], true)).toMatchObject({ ok: true, execution: "not-started", data: { appliedCount: 0, applied: [] } });
+    expect(f.rows.find(r => r.id === OTHER)?.markdown).toBe("old");
+    expect(f.calls.some(args => args.includes("kramdown"))).toBe(false);
+  });
+  it("guards full-profile moves against document roots and descendant destinations", async () => {
+    const f = await fixture();
+    expect(await f.call("siyuan_move_block", { id: DOC, parent: BLOCK })).toMatchObject({ code: "TARGET_TYPE_MISMATCH" });
+    expect(await f.call("siyuan_move_block", { id: BLOCK, parent: BLOCK, previous: CHILD })).toMatchObject({ code: "CONFLICTING_OPERATIONS" });
+    expect(f.calls.every(args => args.includes("sql"))).toBe(true);
   });
   it("exposes permission-aware capabilities without querying note data", async () => {
     const f = await fixture();

@@ -5,7 +5,7 @@ import { normalizeMarkdown } from "../markdown/normalize.js";
 import { isSingleBlockMarkdown } from "../markdown/validate.js";
 import { runAuditedWrite } from "../runtime/audit.js";
 import { requireWrite } from "../safety/permissions.js";
-import { checkInsertion, readTargets, requireTarget, safetyError } from "../safety/targets.js";
+import { resolveInsertion, readTargets, requireTarget, safetyError } from "../safety/targets.js";
 
 export type PatchOperation =
   | { op: "append"; parent: string; markdown: string }
@@ -26,13 +26,15 @@ export async function patchBlocksDirectly(config: ServerConfig, cli: SiyuanCli, 
   const invalidDocument = requireTarget(targets.get(documentId)!, "document", command);
   if (invalidDocument) return invalidDocument;
   const destructive = operations.filter((op) => op.op === "update" || op.op === "delete");
-  for (const op of operations) {
+  for (const [index, op] of operations.entries()) {
     if ("id" in op) {
       const invalidTarget = requireTarget(targets.get(op.id)!, "content", command);
-      if (invalidTarget) return invalidTarget;
+      if (invalidTarget) return { ...invalidTarget, data: { ...invalidTarget.data as object, failedIndex: index } };
     } else {
-      const invalidTarget = checkInsertion(targets, op.parent, op.op === "insert" ? op.previous : undefined, command);
-      if (invalidTarget) return invalidTarget;
+      const location = resolveInsertion(targets, op.parent, op.op === "insert" ? op.previous : undefined, command);
+      if ("ok" in location) return { ...location, data: { ...location.data as object, failedIndex: index } };
+      const built = prepared[index].built;
+      if (!("error" in built)) built.args[built.args.indexOf("--parent") + 1] = location.parent;
     }
   }
   // Reject dependencies on any destructive target, in either order, before the first write.
@@ -64,8 +66,10 @@ export async function patchBlocksDirectly(config: ServerConfig, cli: SiyuanCli, 
     const result = await runAuditedWrite(config, cli, built.command, withDryRun(built.args, dryRun), { operation, index, documentId, dryRun }, dryRun);
     warnings.push(...result.warnings);
     if (!result.ok) return { ok: false, command, code: "PARTIAL_FAILURE", execution: result.execution === "unknown" ? "unknown" : applied.length ? "partial" : "not-started", retryable: false, warnings, data: { applied, failed: { index, op: operation.op, ...result }, requiresRefresh: true } };
-    applied.push({ index, op: operation.op, id: "id" in operation ? operation.id : undefined, result: result.data });
+    applied.push({ index, op: operation.op, id: "id" in operation ? operation.id : result.createdId, result: result.data });
   }
+  if (dryRun) return { ok: true, command, execution: "not-started", verification: "not-required", warnings,
+    data: { documentId, applied: [], appliedCount: 0, previewed: applied, requiresRefresh: false } };
   let verified = true;
   if (destructive.length) {
     const remaining = await readTargets(cli, destructive.map((op) => op.id), command, undefined, true);

@@ -11,4 +11,5 @@ export interface CliExecutionResult {
   stderr: string;
   exitCode: number | null;
   timedOut: boolean;
+  outputTruncated?: boolean;
 }

@@ -22,6 +22,8 @@ npm run build
 
 `typecheck` 检查源码、TypeScript 测试和 Vitest 配置，不产生输出。`build` 清理 `dist/` 后编译 `src/`，避免移动或删除源码后残留旧 JavaScript。`dist/index.js` 继续作为 npm 可执行入口，现有 MCP 客户端配置无需修改。
 
+服务运行时的声明下限仍为 Node 18；贡献者完整检查推荐 Node 24，最低使用 Node 22.13+。Vitest 自身不支持 Node 18，生成查询的内存 SQLite 测试也需要较新的 Node。旧开发环境跳过 SQLite 用例不等于完整验证通过；单一版本的检查不证明所有声明运行版本和平台都已验证。
+
 开发可使用 `npm run dev`；构建后使用 `npm start`。Windows 启动辅助位于 `scripts/`。
 
 ## 目录与产物

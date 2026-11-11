@@ -3,7 +3,7 @@ import { normalizeMarkdown } from "../markdown/normalize.js";
 import { NormalizedResponse } from "../types.js";
 
 export async function verifyMarkdown(cli: SiyuanCli, id: string, markdown: string, result: NormalizedResponse): Promise<NormalizedResponse> {
-  if (!result.ok) return result;
+  if (!result.ok || result.execution === "not-started") return result;
   const read = await cli.run("write_verify", ["block", "kramdown", "--id", id, "--mode", "md"], { output: "text" });
   const passed = read.ok && typeof read.data === "string" && normalizeMarkdown(read.data) === normalizeMarkdown(markdown);
   return {

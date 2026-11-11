@@ -57,4 +57,24 @@ describe("audit input sanitization", () => {
       await rm(logDir, { recursive: true, force: true });
     }
   });
+  it("redacts titles, attribute values and database content payloads", () => {
+    const input = { id: "target", title: "private title", attrs: { custom: "private attribute" }, operation: { value: ["private cell"], content: "private content" } };
+    const sanitized = sanitizeAuditInput(input);
+    expect(sanitized).toMatchObject({ id: "target", title: { redacted: true }, attrs: { redacted: true }, operation: { value: { redacted: true }, content: { redacted: true } } });
+    expect(JSON.stringify(sanitized)).not.toContain("private");
+  });
+  it("preserves a proven pre-execution workspace failure in results and audit", async () => {
+    const logDir = await mkdtemp(path.join(tmpdir(), "siyuan-audit-workspace-"));
+    const config = { ...baseConfig, workspace: undefined, allowWrite: true, logDir };
+    const calls: string[][] = [];
+    const cli = new SiyuanCli(config, async (_file, args) => { calls.push(args); return { stdout: "{}", stderr: "", exitCode: 0, timedOut: false }; });
+    try {
+      expect(await runAuditedWrite(config, cli, "document_create", ["document", "create"], {}, false)).toMatchObject({ code: "WORKSPACE_UNAVAILABLE", execution: "not-started" });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toContain("workspace");
+      const entries = readFileSync(path.join(logDir, "writes.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+      expect(entries[0].requestId).toBe(entries[1].requestId);
+      expect(entries[1]).toMatchObject({ code: "WORKSPACE_UNAVAILABLE", execution: "not-started" });
+    } finally { await rm(logDir, { recursive: true, force: true }); }
+  });
 });

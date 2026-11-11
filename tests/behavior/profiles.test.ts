@@ -4,6 +4,10 @@ import { loadConfig } from "../../src/config.js";
 import { registeredToolNames, registeredToolSchemas, schemaDescription } from "../helpers/tools.js";
 
 describe("tool profiles", () => {
+  it("accepts an optional isolated CLI home without changing defaults", () => {
+    expect(loadConfig({}).homeDir).toBeUndefined();
+    expect(loadConfig({ SIYUAN_MCP_HOME_DIR: " /synthetic-home " }).homeDir).toBe("/synthetic-home");
+  });
   it("defaults to the minimal tool profile", () => {
     expect(loadConfig({}).toolProfile).toBe("minimal");
     expect(loadConfig({ SIYUAN_MCP_PROFILE: "unknown" }).toolProfile).toBe("minimal");

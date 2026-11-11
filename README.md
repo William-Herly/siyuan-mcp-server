@@ -88,7 +88,7 @@ siyuan --help
 从项目的 [Releases](https://github.com/William-Herly/siyuan-mcp-server/releases) 页面下载 `.tgz`：
 
 ```bash
-npm install -g ./siyuan-mcp-server-2.0.0.tgz
+npm install -g ./siyuan-mcp-server-2.0.1.tgz
 ```
 
 安装后可执行命令为：
@@ -152,7 +152,8 @@ Windows JSON 路径建议使用正斜杠。
 
 | 环境变量 | 是否必需 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `SIYUAN_MCP_WORKSPACE` | 建议 | 由 CLI 解析 | 思源工作空间绝对路径 |
+| `SIYUAN_MCP_WORKSPACE` | 建议 | 首次数据调用时发现并固定 | 思源工作空间绝对路径；自动发现失败则停止数据命令 |
+| `SIYUAN_MCP_HOME_DIR` | 否 | CLI 的系统用户目录 | 支持该参数的 CLI 使用独立用户配置根；不等同于工作空间或已验证隔离 |
 | `SIYUAN_MCP_CLI_PATH` | 否 | `siyuan` | `siyuan` 命令或 `SiYuan-Kernel` 绝对路径 |
 | `SIYUAN_MCP_PROFILE` | 否 | `minimal` | `minimal`、`standard` 或 `full` |
 | `SIYUAN_MCP_ALLOW_WRITE` | 写入时 | `false` | 设置为 `true` 后允许普通写入 |
@@ -216,7 +217,7 @@ Windows JSON 路径建议使用正斜杠。
 - 能力缺失或被拒绝时，Agent 应停止相关动作，不能自行改用 HTTP、CLI 或文件操作。外部路径的强制隔离由宿主负责。
 - 已移除不可用的自动导出流程；旧 recovery 目录文件未删除，不应当作可靠原生备份。
 - CLI 使用参数数组调用，不通过 shell 拼接用户输入。
-- Markdown 正文在审计日志中替换为长度、字节数和 SHA-256。
+- 正文、标题、属性和数据库值等已识别内容字段在审计日志中替换为长度、字节数和 SHA-256；原始后端错误仍需审查。
 - 错误信息不应包含认证头和思源敏感配置。
 - `notes/`、日志、测试报告、构建结果和安装包不会提交到 Git。
 
@@ -231,6 +232,8 @@ Windows JSON 路径建议使用正斜杠。
 - 写入具备目标检查与定向验证，但没有自动备份、自动回滚、强制版本控制和宿主隔离。
 
 升级后重启 MCP 客户端刷新工具列表。
+
+2.0.1 保留工具名和 profile；收紧生成文件的导出权限，并修正插入位置、大文档查询和正文空白处理。迁移条件、暂不支持的 `.sy` 导出及 CLI 适配范围见[工具参考](docs/tool-coverage.md)。
 
 ## 开发与测试
 

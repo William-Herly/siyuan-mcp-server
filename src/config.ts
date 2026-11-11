@@ -7,6 +7,7 @@ export type ToolProfile = "minimal" | "standard" | "full";
 
 export interface ServerConfig {
   workspace?: string;
+  homeDir?: string;
   cliPath: string;
   allowWrite: boolean;
   allowDangerous: boolean;
@@ -27,6 +28,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
 
   return {
     workspace: nonEmpty(env.SIYUAN_MCP_WORKSPACE),
+    homeDir: nonEmpty(env.SIYUAN_MCP_HOME_DIR),
     cliPath: nonEmpty(env.SIYUAN_MCP_CLI_PATH) ?? DEFAULT_CLI_PATH,
     allowWrite,
     allowDangerous,
@@ -57,6 +59,7 @@ export function publicConfigSummary(config: ServerConfig) {
   return {
     workspaceConfigured: Boolean(config.workspace),
     workspace: config.workspace,
+    homeDir: config.homeDir,
     cliPath: config.cliPath,
     permissionMode: permissionMode(config),
     toolProfile: config.toolProfile,
@@ -69,7 +72,7 @@ export async function validateConfig(config: ServerConfig): Promise<string[]> {
   const warnings: string[] = [];
 
   if (!config.workspace) {
-    warnings.push("SIYUAN_MCP_WORKSPACE is not set; CLI calls may fail unless the SiYuan CLI has a default workspace.");
+    warnings.push("SIYUAN_MCP_WORKSPACE is not set; data commands require successful workspace discovery. Discovery failure stops the command.");
   } else {
     try {
       await access(config.workspace, constants.R_OK);

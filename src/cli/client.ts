@@ -12,6 +12,8 @@ export interface CliRunOptions {
 
 export class SiyuanCli {
   private discoveredWorkspace?: string;
+  private workspaceDiscovery?: Promise<string | undefined>;
+  private discoveredVersion?: string;
 
   constructor(
     private readonly config: ServerConfig,
@@ -23,9 +25,17 @@ export class SiyuanCli {
    */
   async run(command: string, args: string[], options: CliRunOptions = {}): Promise<NormalizedResponse> {
     const workspace = await this.resolveWorkspace(command);
+    if (!workspace && command !== "workspace_info" && command !== "workspace_list") {
+      return { ok: false, command, code: "WORKSPACE_UNAVAILABLE", execution: "not-started", retryable: false,
+        warnings: ["Could not determine the workspace. Set SIYUAN_MCP_WORKSPACE or correct workspace discovery and restart the server. No data command was executed."] };
+    }
     const cliArgs = this.withCommonArgs(args, workspace);
     const result = await this.executor(this.config.cliPath, cliArgs, this.config.timeoutMs);
-    const warnings = result.stderr.trim() ? [result.stderr.trim()] : [];
+    const warnings = result.stderr.trim() ? [bounded(result.stderr.trim())] : [];
+
+    if (result.outputTruncated) {
+      return { ok: false, command, code: "CLI_OUTPUT_LIMIT", warnings: [...warnings, "CLI output exceeded the capture limit. Its contents and execution outcome cannot be inferred from partial output."], raw: bounded(result.stdout), truncated: true };
+    }
 
     if (result.timedOut) {
       return {
@@ -46,12 +56,14 @@ export class SiyuanCli {
     }
 
     const parsed = options.output === "text" ? parseText(result.stdout) : parseJsonOrText(result.stdout);
+    if (command === "workspace_info") this.rememberWorkspace(result.stdout);
     return {
       ok: true,
       data: parsed.data,
       warnings: parsed.warning ? [...warnings, parsed.warning] : warnings,
       command,
-      raw: parsed.raw
+      raw: parsed.raw,
+      ...(args[0] === "sql" && /Results truncated to \d+ rows/i.test(result.stderr) ? { truncated: true } : {})
     };
   }
 
@@ -59,11 +71,19 @@ export class SiyuanCli {
     return this.withCommonArgs(args, this.config.workspace);
   }
 
+  /** Cached observations only: health never launches a backend probe. */
+  status() {
+    return { workspaceStatus: this.config.workspace ? "configured" : this.discoveredWorkspace ? "resolved" : "unknown",
+      version: this.discoveredVersion ?? null, versionSource: this.discoveredVersion ? "workspace-info" : "unknown",
+      compatibility: "unverified", homeDirConfigured: Boolean(this.config.homeDir) };
+  }
+
   private withCommonArgs(args: string[], workspace: string | undefined): string[] {
     const common = ["--format", "json"];
     if (workspace) {
       common.unshift("--workspace", workspace);
     }
+    if (this.config.homeDir) common.unshift("--home-dir", this.config.homeDir);
 
     return [...common, ...args];
   }
@@ -80,20 +100,32 @@ export class SiyuanCli {
       return this.discoveredWorkspace;
     }
 
-    if (command === "workspace_info") {
+    if (command === "workspace_info" || command === "workspace_list") {
       return undefined;
     }
 
-    const result = await this.executor(this.config.cliPath, ["--format", "json", "workspace", "info"], this.config.timeoutMs);
-    if (result.exitCode !== 0 || result.timedOut) {
-      return undefined;
-    }
+    this.workspaceDiscovery ??= this.discoverWorkspace();
+    return this.workspaceDiscovery;
+  }
 
-    const workspace = extractWorkspacePath(result.stdout);
-    this.discoveredWorkspace = workspace;
-    return workspace;
+  private async discoverWorkspace(): Promise<string | undefined> {
+    const result = await this.executor(this.config.cliPath, this.withCommonArgs(["workspace", "info"], undefined), this.config.timeoutMs);
+    if (result.exitCode !== 0 || result.timedOut || result.outputTruncated) return undefined;
+    this.rememberWorkspace(result.stdout);
+    return this.discoveredWorkspace;
+  }
+
+  private rememberWorkspace(stdout: string): void {
+    this.discoveredWorkspace ??= extractWorkspacePath(stdout);
+    try {
+      const parsed = JSON.parse(stdout.trim());
+      const version = parsed?.version ?? parsed?.data?.version;
+      if (typeof version === "string" && /^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(version)) this.discoveredVersion = version;
+    } catch { /* Invalid workspace output is not a version observation. */ }
   }
 }
+
+export const MAX_CLI_OUTPUT_BYTES = 16 * 1024 * 1024;
 
 /**
  * Low-level process executor. All command arguments are passed as an array, never shell-interpolated.
@@ -108,28 +140,33 @@ export function execute(file: string, args: string[], timeoutMs: number): Promis
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let capturedBytes = 0;
+    let outputTruncated = false;
 
     const timer = setTimeout(() => {
       settled = true;
       child.kill();
-      resolve({ stdout, stderr, exitCode: null, timedOut: true });
+      resolve({ stdout, stderr, exitCode: null, timedOut: true, outputTruncated });
     }, timeoutMs);
 
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
-    });
+    const capture = (chunk: string, stream: "stdout" | "stderr") => {
+      if (settled || outputTruncated) return;
+      const bytes = Buffer.byteLength(chunk, "utf8");
+      if (capturedBytes + bytes > MAX_CLI_OUTPUT_BYTES) { outputTruncated = true; child.kill(); return; }
+      if (stream === "stdout") stdout += chunk; else stderr += chunk;
+      capturedBytes += bytes;
+    };
+    child.stdout.on("data", (chunk: string) => capture(chunk, "stdout"));
+    child.stderr.on("data", (chunk: string) => capture(chunk, "stderr"));
     child.on("error", (error) => {
       if (settled) {
         return;
       }
       settled = true;
       clearTimeout(timer);
-      resolve({ stdout, stderr: error.message, exitCode: 1, timedOut: false });
+      resolve({ stdout, stderr: error.message, exitCode: 1, timedOut: false, outputTruncated });
     });
     child.on("close", (exitCode) => {
       if (settled) {
@@ -137,7 +174,7 @@ export function execute(file: string, args: string[], timeoutMs: number): Promis
       }
       settled = true;
       clearTimeout(timer);
-      resolve({ stdout, stderr, exitCode, timedOut: false });
+      resolve({ stdout, stderr, exitCode, timedOut: false, outputTruncated });
     });
   });
 }
@@ -173,7 +210,7 @@ function isKnownPlainSuccess(value: string): boolean {
 }
 
 function parseText(stdout: string): { data: unknown; warning?: string; raw?: string } {
-  return { data: stdout.trim() };
+  return { data: stdout };
 }
 
 function extractWorkspacePath(stdout: string): string | undefined {

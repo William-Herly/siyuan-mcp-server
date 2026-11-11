@@ -4,7 +4,7 @@ import { ServerConfig } from "../config.js";
 import { isSingleBlockMarkdown, validateWritableMarkdown } from "../markdown/validate.js";
 import { runAuditedWrite } from "../runtime/audit.js";
 import { requireWrite } from "../safety/permissions.js";
-import { checkInsertion, readTargets, requireTarget, safetyError } from "../safety/targets.js";
+import { resolveInsertion, readTargets, requireTarget, safetyError } from "../safety/targets.js";
 import { verifyMarkdown } from "../safety/verification.js";
 
 export async function writeBlockChild(
@@ -27,8 +27,8 @@ export async function writeBlockChild(
 
   const targets = await readTargets(cli, [parent], command);
   if (!(targets instanceof Map)) return targets;
-  const invalid = checkInsertion(targets, parent, undefined, command);
-  if (invalid) return invalid;
+  const location = resolveInsertion(targets, parent, undefined, command);
+  if ("ok" in location) return location;
   return runAuditedWrite(
     config,
     cli,
@@ -54,7 +54,7 @@ export async function updateBlockDirectly(
     return {
       ok: false,
       warnings: [
-        "siyuan_update_block only supports one Markdown block. SiYuan CLI block update keeps only the first block and discards later blocks."
+        "siyuan_update_block only supports one Markdown block. Use insert or append for multiple blocks."
       ],
       command: "block_update"
     };

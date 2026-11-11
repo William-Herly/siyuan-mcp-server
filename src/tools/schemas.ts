@@ -1,16 +1,19 @@
 import { z } from "zod/v4";
 import { validateWritableMarkdown } from "../markdown/validate.js";
 
+export const parentBlockSchema = () => z.string().min(1).describe("Insertion container ID: document, list/list item, quote, superblock or another supported container. Headings and paragraphs are leaf blocks. With previous, the anchor's immediate section heading is also accepted for compatibility; the server resolves its physical container.");
+export const previousBlockSchema = () => z.string().min(1).optional().describe("Existing content block after which to insert. Must belong to parent's container in the same document. For a heading section, use the heading itself or a known final block as the anchor; children of a heading are section contents, not physical child nodes.");
+
 export const patchOperationSchema = z.discriminatedUnion("op", [
   z.object({
     op: z.literal("append"),
-    parent: z.string().min(1),
+    parent: parentBlockSchema(),
     markdown: writableMarkdownSchema()
   }),
   z.object({
     op: z.literal("insert"),
-    parent: z.string().min(1),
-    previous: z.string().min(1).optional(),
+    parent: parentBlockSchema(),
+    previous: previousBlockSchema(),
     markdown: writableMarkdownSchema()
   }),
   z.object({

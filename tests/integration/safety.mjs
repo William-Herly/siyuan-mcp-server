@@ -13,14 +13,18 @@ requireVerifiedIntegrationIsolation();
 
 const { normalizeMarkdown } = await import("../../dist/markdown/normalize.js");
 
-// A disposable workspace does not isolate shared startup configuration.
+// Prepared home/workspace separation does not itself satisfy the isolation gate.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const workspace = await mkdtemp(path.join(tmpdir(), "siyuan-mcp-validation-"));
-const logDir = path.join(workspace, "mcp-logs");
+const testRoot = await mkdtemp(path.join(tmpdir(), "siyuan-mcp-validation-"));
+const workspace = path.join(testRoot, "workspace");
+const homeDir = path.join(testRoot, "home");
+await mkdir(workspace);
+await mkdir(homeDir);
+const logDir = path.join(testRoot, "mcp-logs");
 const report = { startedAt: new Date().toISOString(), workspace, logDir, cases: [], calls: [], limits: ["Does not test host isolation or production writes", "No automatic rollback or conditional version writes"] };
 const clients = [];
 const cliPath = process.env.SIYUAN_MCP_CLI_PATH || "siyuan";
-const kernel = spawn(cliPath, ["--workspace", workspace, "serve", "--port", "0", "--accessAuthCode", randomUUID()], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+const kernel = spawn(cliPath, ["--home-dir", homeDir, "--workspace", workspace, "serve", "--port", "0", "--fixed-port=false", "--accessAuthCode", randomUUID()], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
 let startup = "";
 const ready = new Promise((resolve, reject) => {
   const timer = setTimeout(() => reject(new Error("Disposable kernel startup timed out")), 45000);
@@ -32,7 +36,7 @@ const ready = new Promise((resolve, reject) => {
 
 async function connect(profile, write, dangerous) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([, value]) => typeof value === "string"));
-  Object.assign(env, { SIYUAN_MCP_WORKSPACE: workspace, SIYUAN_MCP_LOG_DIR: logDir, SIYUAN_MCP_PROFILE: profile, SIYUAN_MCP_ALLOW_WRITE: String(write), SIYUAN_MCP_ALLOW_DANGEROUS: String(dangerous), SIYUAN_MCP_CLI_PATH: cliPath });
+  Object.assign(env, { SIYUAN_MCP_WORKSPACE: workspace, SIYUAN_MCP_HOME_DIR: homeDir, SIYUAN_MCP_LOG_DIR: logDir, SIYUAN_MCP_PROFILE: profile, SIYUAN_MCP_ALLOW_WRITE: String(write), SIYUAN_MCP_ALLOW_DANGEROUS: String(dangerous), SIYUAN_MCP_CLI_PATH: cliPath });
   const client = new Client({name:"safety-validation",version:"1.0.0"});
   clients.push(client);
   await client.connect(new StdioClientTransport({ command: process.execPath, args: [path.join(root, "dist/index.js")], cwd: root, env, stderr: "pipe" }));

@@ -11,6 +11,7 @@ import { textResult } from "../mcp/results.js";
 import { documentInfoWithFallback, documentKramdownWithAssets, outlineWithEmptyFallback } from "../operations/readDocument.js";
 import { runAuditedWrite } from "../runtime/audit.js";
 import { requireWrite } from "../safety/permissions.js";
+import { safetyError } from "../safety/targets.js";
 
 const optionalStringArray = z.array(z.string().min(1)).optional();
 
@@ -27,7 +28,7 @@ export function registerReadTools(server: ToolRegistrar, config: ServerConfig, c
     async () => {
       const structuredContent = {
         ok: true,
-        data: { ...publicConfigSummary(config), writeCapabilities: writeCapabilities(config), accessPolicy: "mcp-only; missing capabilities are not permission to use HTTP, CLI or files", externalIsolation: "host-managed; not enforced by this server" },
+        data: { ...publicConfigSummary(config), backend: cli.status(), writeCapabilities: writeCapabilities(config), accessPolicy: "mcp-only; missing capabilities are not permission to use HTTP, CLI or files", externalIsolation: "host-managed; not enforced by this server" },
         warnings: await validateConfig(config),
         command: "health"
       };
@@ -74,7 +75,7 @@ export function registerReadTools(server: ToolRegistrar, config: ServerConfig, c
       sql: z.string().min(1),
       limit: z.number().int().positive().max(1000).default(100)
     },
-    async ({ sql, limit }) => cli.run("sql_select", ["sql", ensureLimit(validateSelectSql(sql), limit)])
+    async ({ sql, limit }) => cli.run("sql_select", ["sql", "--limit", String(limit), ensureLimit(validateSelectSql(sql), limit)])
   );
 
   registerCliTool(
@@ -152,7 +153,7 @@ export function registerReadTools(server: ToolRegistrar, config: ServerConfig, c
   registerCliTool(
     server,
     "siyuan_get_block_children",
-    "Gets direct child blocks for a parent block.",
+    "Gets physical child blocks for a container. For headings, returns the computed section contents instead: headings are leaf blocks, so these results do not mean they can receive children. Use an insert previous anchor for placement below a heading.",
     { id: z.string().min(1) },
     async ({ id }) => cli.run("block_children", ["block", "children", "--id", id])
   );
@@ -347,9 +348,9 @@ export function registerReadTools(server: ToolRegistrar, config: ServerConfig, c
   registerCliTool(
     server,
     "siyuan_repo_file_export",
-    "Exports a file from a repository snapshot by file ID.",
+    "Exports a repository snapshot file to a temporary path. Requires SIYUAN_MCP_ALLOW_WRITE=true and records an audit entry.",
     { id: z.string().min(1) },
-    async ({ id }) => cli.run("repo_file_export", ["repo", "file", "export", "--id", id], { output: "text" })
+    async ({ id }) => exportMaybeWrite(config, cli, "repo_file_export", ["repo", "file", "export", "--id", id], { id }, undefined)
   );
 
   registerCliTool(
@@ -536,15 +537,15 @@ export function registerReadTools(server: ToolRegistrar, config: ServerConfig, c
   registerCliTool(
     server,
     "siyuan_export_sy",
-    "Exports a document as .sy.zip. Passing output writes to a target path and requires SIYUAN_MCP_ALLOW_WRITE=true.",
+    "Unavailable: native .sy archive/restore semantics have not been verified for the current CLI conversion path. Retained for compatibility; always returns UNSUPPORTED_CAPABILITY without executing the CLI. Do not use as a backup or substitute another export automatically.",
     { id: z.string().min(1), output: z.string().optional() },
-    async ({ id, output }) => exportMaybeWrite(config, cli, "export_sy", output ? ["export", "sy", "--id", id, "--output", output] : ["export", "sy", "--id", id], { id, output }, output)
+    async () => safetyError("export_sy", "UNSUPPORTED_CAPABILITY", "Native .sy archive and restore behavior is unverified. No export was attempted. Use a supported export format only when it matches the user's request.")
   );
 
   registerCliTool(
     server,
     "siyuan_export_md_zip",
-    "Exports a document as Markdown zip. Passing output writes to a target path and requires SIYUAN_MCP_ALLOW_WRITE=true.",
+    "Creates a Markdown zip archive, including when output is omitted and the CLI chooses a temporary path. Always requires SIYUAN_MCP_ALLOW_WRITE=true and records an audit entry.",
     { id: z.string().min(1), output: z.string().optional() },
     async ({ id, output }) => exportMaybeWrite(config, cli, "export_md_zip", output ? ["export", "md-zip", "--id", id, "--output", output] : ["export", "md-zip", "--id", id], { id, output }, output)
   );
@@ -552,7 +553,7 @@ export function registerReadTools(server: ToolRegistrar, config: ServerConfig, c
   registerCliTool(
     server,
     "siyuan_export_data",
-    "Exports full workspace data. Passing output writes to a target path and requires SIYUAN_MCP_ALLOW_WRITE=true.",
+    "Creates a full-workspace data archive, including when output is omitted. Always requires SIYUAN_MCP_ALLOW_WRITE=true and records an audit entry.",
     { output: z.string().optional() },
     async ({ output }) => exportMaybeWrite(config, cli, "export_data", output ? ["export", "data", "--output", output] : ["export", "data"], { output }, output)
   );
@@ -574,7 +575,8 @@ async function exportMaybeWrite(
   input: Record<string, unknown>,
   outputPath: string | undefined
 ) {
-  if (!outputPath) {
+  const createsArtifact = ["export_md_zip", "export_data", "repo_file_export"].includes(command);
+  if (!outputPath && !createsArtifact) {
     return cli.run(command, args, { output: "text" });
   }
 
@@ -583,5 +585,8 @@ async function exportMaybeWrite(
     return permission;
   }
 
-  return runAuditedWrite(config, cli, command, args, input, false);
+  const result = await runAuditedWrite(config, cli, command, args, input, false, !outputPath ? { output: "text" } : {});
+  // CLI prints one path line for an archive; Markdown/HTML bodies are never trimmed.
+  return createsArtifact && !outputPath && result.ok && typeof result.data === "string"
+    ? { ...result, data: result.data.replace(/\r?\n$/, "") } : result;
 }
